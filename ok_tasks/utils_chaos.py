@@ -510,12 +510,62 @@ def handle_discovery_select(task: TriggerTask): #忘了按个页面要用
         click_y = (region[1] + region[3]) / 2
         task.log_info(f"发现选项{index + 1}满足保存上限要求，点击该选项")
         _move_and_click(task, click_x, click_y)
-        task.sleep(1)
+        task.sleep(0.5)
+        _confirm_codex_choice(task)
         return True
 
-    task.log_info("没有发现选项满足存储数据保存上限要求，点击取消")
-    _move_and_click(task, 0.961, 0.050)
+    # 本页面没有"取消"按钮，右上角的 Esc 是退出整个选择流程的回退入口。
+    # 三个选项都不达标时若去点 Esc，会退出本层选择但页面不推进，下一帧又
+    # 回到同一页面，形成"反复点右上角、流程卡死"的死循环。
+    # 改为选中存储数据保存上限最高的选项，让流程继续推进。
+    best_option = None
+    for index, region in enumerate(option_regions):
+        option_text = _get_region_text(task, region)
+        level_match = _match_storage_data_value(task, option_text)
+        if not level_match:
+            continue
+        data_value_level = int(level_match.group(1))
+        if best_option is None or data_value_level > best_option[0]:
+            best_option = (data_value_level, index, region)
+
+    if best_option is None:
+        task.log_info(
+            "没有发现选项满足存储数据保存上限要求，且三个选项均未识别到保存上限，"
+            "保持本帧不动等待重试"
+        )
+        return False
+
+    data_value_level, index, region = best_option
+    click_x = (region[0] + region[2]) / 2
+    click_y = (region[1] + region[3]) / 2
+    task.log_info(
+        f"没有选项达到{required_level}的要求，退而选择保存上限最高的"
+        f"选项{index + 1}（上限={data_value_level}）以继续推进流程"
+    )
+    _move_and_click(task, click_x, click_y)
+    task.sleep(0.5)
+    _confirm_codex_choice(task)
+    return True
+
+
+def _confirm_codex_choice(task: TriggerTask):
+    """获得法典页面选中卡牌后点击右下角确认，避免下一帧重复命中同一页面。"""
+    confirm_region = (0.735, 0.855, 0.997, 0.985)
+    boxes = [
+        box for box in task.all_texts
+        if confirm_region[0] <= (box.x + box.width / 2) / task.width <= confirm_region[2]
+        and confirm_region[1] <= (box.y + box.height / 2) / task.height <= confirm_region[3]
+        and "确认" in box.name
+    ]
+    if not boxes:
+        task.log_info("选中卡牌后未识别到确认按钮，由通用确认处理器接管")
+        return False
+    if not is_button_active(task, boxes[0]):
+        task.log_info("选中卡牌后确认按钮仍未激活，由通用确认处理器接管")
+        return False
+    task.click_box(boxes[0])
     task.sleep(1)
+    task.log_info("已点击获得法典页面的确认按钮")
     return True
 
 
