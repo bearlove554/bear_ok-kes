@@ -254,6 +254,18 @@ def find_box_at_point(task: TriggerTask, rel_x, rel_y):
     return min(hits, key=lambda b: b.area()) if hits else None
 
 
+def _has_pending_confirm(task: TriggerTask):
+    """画面上存在"确认/确定"文本时视为有待处理的二次确认弹窗。
+
+    弹窗是半透明遮罩，底层页面的按钮文字仍会被 OCR 读到，导致右下角固定
+    坐标的按钮处理器继续点击弹窗覆盖区域，把弹窗关掉后又重新弹出。
+    """
+    for text_box in task.all_texts:
+        if _clean_match(text_box.name, "确认") or _clean_match(text_box.name, "确定"):
+            return True
+    return False
+
+
 def find_target_card(task: TriggerTask):
     """查找target卡牌特征，返回特征框列表及其对应的相对点击位置。"""
     search_box = task.box_of_screen(0.090, 0.179, 0.927, 0.342)
@@ -1866,13 +1878,16 @@ def handle_refine_equipment_credit(task: TriggerTask):
 
 
 def handle_center_confirm(task: TriggerTask):
-    """页面中央的"确认"按钮。"""
+    """页面中央的"确认"按钮，兼容二次确认弹窗的"确定"文案。"""
     confirm_region = (0.009, 0.168, 0.977, 0.875)
     box = next(
         (
             text_box
             for text_box in task.all_texts
-            if _clean_match(text_box.name, "确认")
+            if (
+                _clean_match(text_box.name, "确认")
+                or _clean_match(text_box.name, "确定")
+            )
             and confirm_region[0]
             <= (text_box.x + text_box.width / 2) / task.width
             <= confirm_region[2]
@@ -1883,7 +1898,7 @@ def handle_center_confirm(task: TriggerTask):
         None,
     )
     if box:
-        task.log_info("检测到页面中央确认按钮，点击确认")
+        task.log_info(f"检测到页面中央确认按钮「{box.name}」，点击确认")
         task.click_box(box)
         task.sleep(1)
         return True
@@ -2975,13 +2990,16 @@ def handle_continue(task: TriggerTask):
 
 
 def handle_confirm(task: TriggerTask):
-    """通用"确认"按钮。"""
+    """通用"确认"按钮，兼容二次确认弹窗的"确定"文案。"""
     confirm_region = (0.267, 0.867, 0.991, 0.979)
     box = next(
         (
             text_box
             for text_box in task.all_texts
-            if _clean_match(text_box.name, "确认")
+            if (
+                _clean_match(text_box.name, "确认")
+                or _clean_match(text_box.name, "确定")
+            )
             and confirm_region[0]
             <= (text_box.x + text_box.width / 2) / task.width
             <= confirm_region[2]
@@ -2993,7 +3011,7 @@ def handle_confirm(task: TriggerTask):
     )
     if box:
         if is_button_active(task, box):
-            task.log_info("检测到确认操作，点击确认")
+            task.log_info(f"检测到确认操作「{box.name}」，点击确认")
             task.click_box(box)
             task.sleep(1)
             return True
@@ -3064,6 +3082,8 @@ def handle_three_choice_card_remove(task: TriggerTask):
 
 def handle_flash(task: TriggerTask):
     """通用"闪光"按钮。"""
+    if _has_pending_confirm(task):
+        return False
     box = find_box_at_point(task, 0.945, 0.918)
     if box and _get_game_text(task, '闪光') in box.name:
         if is_button_active(task, box):
@@ -3078,6 +3098,8 @@ def handle_flash(task: TriggerTask):
 
 def handle_reflash(task: TriggerTask):
     """通用"重新闪光"按钮。"""
+    if _has_pending_confirm(task):
+        return False
     box = find_box_at_point(task, 0.945, 0.918)
     if box and _get_game_text(task, '重新闪光') in box.name:
         if is_button_active(task, box):
@@ -3092,6 +3114,8 @@ def handle_reflash(task: TriggerTask):
 
 def handle_grant_flash(task: TriggerTask):
     """通用"赋予闪光"按钮。"""
+    if _has_pending_confirm(task):
+        return False
     box = find_box_at_point(task, 0.945, 0.918)
     if box and _clean_match(box.name, "赋予闪光"):
         if is_button_active(task, box):
@@ -3106,6 +3130,8 @@ def handle_grant_flash(task: TriggerTask):
 
 def handle_copy(task: TriggerTask):
     """通用"复制"按钮。"""
+    if _has_pending_confirm(task):
+        return False
     box = find_box_at_point(task, 0.945, 0.918)
     if box and _clean_match(box.name, "复制"):
         if is_button_active(task, box):
