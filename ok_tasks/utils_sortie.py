@@ -25,6 +25,7 @@ from utils import (
     # handle_stage_clear,
     _finish_only_first_layer,
     handle_auto_stop,
+    handle_treasure_room,
 )
 from utils_chaos import handle_archive_target_member
 
@@ -976,6 +977,7 @@ def handle_rest_sortie(task: TriggerTask):
 PAGE_HANDLERS = [
     handle_auto_stop,
     handle_route_selection,
+    handle_treasure_room, #藏宝室页面，点击宝箱上方三个按钮
     # handle_stage_clear,
     log_credit,
     log_node_status,

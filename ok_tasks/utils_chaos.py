@@ -21,6 +21,7 @@ from utils import (
     is_button_active, is_subsequence, _clean_match,
     handle_shop,
     handle_escape,
+    handle_treasure_room,
     # handle_stage_clear,
     handle_auto_stop,
 )
@@ -1226,6 +1227,7 @@ PAGE_HANDLERS = [
     handle_auto_stop,
     handle_save_target_member,
     handle_route_selection,
+    handle_treasure_room, #藏宝室页面，点击宝箱上方三个按钮
     # handle_stage_clear,
     log_credit,
     log_node_status,

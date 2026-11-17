@@ -4534,6 +4534,67 @@ def handle_minimizemap(task: TriggerTask):
         return True
     return False
 
+def handle_treasure_room(task: TriggerTask):
+    """藏宝室页面: 依次点击宝箱上方三个猫头按钮。
+
+    该页面没有路线节点，也没有常规按钮文字，此前会被路线处理器误判成
+    最终boss后盲点画面中心，或直接无人处理而卡住。
+    """
+    # 三个猫头按钮的中心坐标（相对画面，取自实机截图标定）
+    button_positions = [
+        (0.5388, 0.5077),
+        (0.6842, 0.3533),
+        (0.8182, 0.4700),
+    ]
+
+    # 用按钮的紫色底板判断是否为该页面：三个位置至少命中两个
+    matched = sum(
+        1 for cx, cy in button_positions if _is_chest_button(task, cx, cy)
+    )
+    if matched < 2:
+        # 不在藏宝室页面时清理点击记录
+        if hasattr(task, "_treasure_room_clicked"):
+            task._treasure_room_clicked = []
+        return False
+
+    clicked = getattr(task, "_treasure_room_clicked", None) or []
+    for index, (cx, cy) in enumerate(button_positions):
+        if index in clicked:
+            continue
+        task.log_info(
+            f"藏宝室页面，点击第{index + 1}个宝箱按钮({cx:.3f}, {cy:.3f})"
+        )
+        _move_and_click(task, cx, cy)
+        task.sleep(1)
+        clicked.append(index)
+        task._treasure_room_clicked = clicked
+        return True
+
+    task._treasure_room_clicked = []
+    task.log_info("藏宝室三个宝箱按钮已全部点击")
+    return False
+
+
+def _is_chest_button(task: TriggerTask, cx, cy):
+    """判断指定相对坐标处是否存在宝箱按钮的紫色底板。"""
+    frame = task.frame
+    if frame is None:
+        return False
+    px = int(cx * task.width)
+    py = int(cy * task.height)
+    half = max(4, int(task.height * 0.012))
+    region = frame[
+        max(0, py - half):min(task.height, py + half),
+        max(0, px - half):min(task.width, px + half),
+        :3,
+    ]
+    if region.size == 0:
+        return False
+    avg_b, avg_g, _ = cv2.mean(region)[:3]
+    # 按钮底板是蓝紫色：蓝通道明显高于绿通道
+    return avg_b > 110 and avg_b - avg_g > 40
+
+
 def handle_non_battle_page(task: TriggerTask):
     """非出击/卡厄思页面: 检测到故事/营救/方舟城市时自动停止当前模式，优先级最高。"""
     box = find_box_at_point(task, 0.887, 0.160)
