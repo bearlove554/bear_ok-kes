@@ -3461,8 +3461,14 @@ def handle_route_selection(task: TriggerTask):
                 "special_features": [],
             })
 
-    # 找不到任何普通节点类型特征时，当前路线节点即为boss。
-    if not nodes:
+    # 最终 boss 节点用 finalboss 特征判定。不能仅凭「没有识别到普通节点」
+    # 就认定是 boss：藏宝室等未登记特征类型的节点同样识别不到，会被误判成
+    # boss 后盲点中心坐标，导致在这些地图上卡住无法推进。
+    final_boss_feature = task.find_feature(
+        feature_name="finalboss",
+        box=route_box,
+    )
+    if final_boss_feature:
         task.log_info("检测到最终boss节点，点击进入")
         if hasattr(task, 'node_status'):
             task.node_status['reach_final_boss'] = True
@@ -3486,6 +3492,15 @@ def handle_route_selection(task: TriggerTask):
         _move_and_click(task, 0.815, 0.492)
         task.sleep(2)
         return True
+
+    # 既没有普通节点也没有最终 boss 标记：当前地图存在未登记特征类型的节点
+    # （例如藏宝室），此时不盲点坐标，交由其他处理器或下一帧重试。
+    if not nodes:
+        task.log_info(
+            "路线选择页面未识别到节点类型，且无最终boss特征，"
+            "跳过本帧等待下一帧或由其他处理器接管"
+        )
+        return False
 
     def relative_center(box):
         return (
