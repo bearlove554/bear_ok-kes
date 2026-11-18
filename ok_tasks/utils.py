@@ -4570,16 +4570,17 @@ def handle_treasure_room(task: TriggerTask):
 
 
 def _find_chest_cat_buttons(task: TriggerTask):
-    """定位藏宝室里未被打开的宝箱按钮，返回其中心相对坐标列表。
+    """定位藏宝室里未被打开的宝箱按钮，返回中心相对坐标列表。
 
-    按钮是紫色底板 + 白色猫头图标。宝箱打开后按钮会消失，位置也会随
-    镜头和开合状态变化，所以不能写死坐标，直接按白色猫头图标找。
+    只认「白色猫头图标 + 外圈紫色底板」的组合：游戏画面里接近白色的方块
+    （角色、图标、UI 元素）随处可见，单靠白块会把人物当按钮点，因此必须
+    同时要求图标外圈是宝箱按钮特有的紫色底板。
     """
     frame = task.frame
     if frame is None:
         return []
     height, width = frame.shape[:2]
-    # 只看页面下半部分，避开 HUD 与场景上半部的亮部
+    # 按钮只出现在页面中下部
     top = int(0.25 * height)
     bottom = int(0.60 * height)
     region = frame[top:bottom, :, :3]
@@ -4598,7 +4599,7 @@ def _find_chest_cat_buttons(task: TriggerTask):
     )
 
     visited = np.zeros(white.shape, dtype=bool)
-    buttons = []
+    candidates = []
     rows, cols = np.where(white)
     for start_y, start_x in zip(rows.tolist(), cols.tolist()):
         if visited[start_y, start_x]:
@@ -4617,26 +4618,64 @@ def _find_chest_cat_buttons(task: TriggerTask):
                     if white[ny, nx] and not visited[ny, nx]:
                         visited[ny, nx] = True
                         stack.append((ny, nx))
-        if len(points) < 120:
+        if len(points) < max(40, int(height * width * 0.00004)):
             continue
         ys = [point[0] for point in points]
         xs = [point[1] for point in points]
         box_w = max(xs) - min(xs) + 1
         box_h = max(ys) - min(ys) + 1
-        # 猫头图标是接近方形的小图块
-        if not (20 <= box_w <= 140 and 20 <= box_h <= 140):
+        # 猫头图标在 16:9 画面上约占画面高 5%，限制在 3.5%~7.5%，
+        # 可以排除同样带紫底白图标、但明显更大的界面元素
+        icon_ratio = box_h / height
+        if not (0.035 <= icon_ratio <= 0.075):
             continue
         if not (0.5 <= box_w / box_h <= 1.8):
             continue
         if len(points) / (box_w * box_h) < 0.15:
             continue
-        buttons.append((
+        candidates.append((
             (min(xs) + max(xs)) / 2 / width,
             (min(ys) + max(ys)) / 2 / height + top / height,
         ))
 
+    buttons = [
+        (cx, cy) for cx, cy in candidates
+        if _purple_ring_ratio(frame, cx, cy) > 0.45
+    ]
     buttons.sort(key=lambda item: item[0])
+
+    # 页面上最多三个宝箱按钮
+    if not 1 <= len(buttons) <= 3:
+        return []
     return buttons
+
+
+def _purple_ring_ratio(frame, cx, cy):
+    """计算图标外圈的紫色像素占比，用于区分宝箱按钮与其他白色图标。
+
+    按 HSV 色相判定：宝箱按钮底板是紫色，暗光下亮度会降低但色相不变，
+    因此用色相加饱和度而不是 BGR 绝对值，避免暗处的按钮被漏掉。
+    """
+    height, width = frame.shape[:2]
+    px, py = int(cx * width), int(cy * height)
+    radius_in = max(8, int(min(width, height) * 0.016))
+    radius_out = int(radius_in * 2.2)
+    y0, y1 = max(0, py - radius_out), min(height, py + radius_out)
+    x0, x1 = max(0, px - radius_out), min(width, px + radius_out)
+    region = frame[y0:y1, x0:x1, :3]
+    if region.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    hue = hsv[:, :, 0].astype(int)
+    saturation = hsv[:, :, 1].astype(int)
+    value = hsv[:, :, 2].astype(int)
+    # 宝箱按钮底板的实测色相集中在 134~142，收窄到 130~155 可排除
+    # 同为"彩底白图标"的其他界面元素（蓝底约 115、偏紫约 126）
+    purple = (
+        (hue >= 130) & (hue <= 155)
+        & (saturation > 60) & (value > 60)
+    )
+    return purple.sum() / (region.shape[0] * region.shape[1])
 
 
 def handle_battle_event_choice(task: TriggerTask):
