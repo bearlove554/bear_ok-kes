@@ -4535,64 +4535,108 @@ def handle_minimizemap(task: TriggerTask):
     return False
 
 def handle_treasure_room(task: TriggerTask):
-    """藏宝室页面: 依次点击宝箱上方三个猫头按钮。
+    """藏宝室页面: 依次点击宝箱上方的猫头按钮。
 
     该页面没有路线节点，也没有常规按钮文字，此前会被路线处理器误判成
     最终boss后盲点画面中心，或直接无人处理而卡住。
     """
-    # 三个猫头按钮的中心坐标（相对画面，取自实机截图标定）
-    button_positions = [
-        (0.5388, 0.5077),
-        (0.6842, 0.3533),
-        (0.8182, 0.4700),
-    ]
-
-    # 用按钮的紫色底板判断是否为该页面：三个位置至少命中两个
-    matched = sum(
-        1 for cx, cy in button_positions if _is_chest_button(task, cx, cy)
-    )
-    if matched < 2:
-        # 不在藏宝室页面时清理点击记录
-        if hasattr(task, "_treasure_room_clicked"):
+    buttons = _find_chest_cat_buttons(task)
+    if not buttons:
+        # 不在藏宝室页面时清理点击记录，保证下次进入能重新点
+        if getattr(task, "_treasure_room_clicked", None):
             task._treasure_room_clicked = []
         return False
 
     clicked = getattr(task, "_treasure_room_clicked", None) or []
-    for index, (cx, cy) in enumerate(button_positions):
-        if index in clicked:
-            continue
-        task.log_info(
-            f"藏宝室页面，点击第{index + 1}个宝箱按钮({cx:.3f}, {cy:.3f})"
-        )
-        _move_and_click(task, cx, cy)
-        task.sleep(1)
-        clicked.append(index)
-        task._treasure_room_clicked = clicked
-        return True
+    remaining = [
+        (cx, cy) for cx, cy in buttons
+        if not any(abs(cx - px) < 0.03 and abs(cy - py) < 0.03 for px, py in clicked)
+    ]
+    if not remaining:
+        # 识别到的按钮都已点过：保留记录，等离开页面时再清理，避免同一页面反复点击
+        task.log_info("藏宝室识别到的宝箱按钮均已点击，等待页面推进")
+        return False
 
-    task._treasure_room_clicked = []
-    task.log_info("藏宝室三个宝箱按钮已全部点击")
-    return False
+    cx, cy = remaining[0]
+    task.log_info(
+        f"藏宝室页面，点击宝箱按钮({cx:.3f}, {cy:.3f})，"
+        f"剩余{len(remaining)}个未点击"
+    )
+    _move_and_click(task, cx, cy)
+    task.sleep(1)
+    clicked.append((cx, cy))
+    task._treasure_room_clicked = clicked
+    return True
 
 
-def _is_chest_button(task: TriggerTask, cx, cy):
-    """判断指定相对坐标处是否存在宝箱按钮的紫色底板。"""
+def _find_chest_cat_buttons(task: TriggerTask):
+    """定位藏宝室里未被打开的宝箱按钮，返回其中心相对坐标列表。
+
+    按钮是紫色底板 + 白色猫头图标。宝箱打开后按钮会消失，位置也会随
+    镜头和开合状态变化，所以不能写死坐标，直接按白色猫头图标找。
+    """
     frame = task.frame
     if frame is None:
-        return False
-    px = int(cx * task.width)
-    py = int(cy * task.height)
-    half = max(4, int(task.height * 0.012))
-    region = frame[
-        max(0, py - half):min(task.height, py + half),
-        max(0, px - half):min(task.width, px + half),
-        :3,
-    ]
+        return []
+    height, width = frame.shape[:2]
+    # 只看页面下半部分，避开 HUD 与场景上半部的亮部
+    top = int(0.25 * height)
+    bottom = int(0.60 * height)
+    region = frame[top:bottom, :, :3]
     if region.size == 0:
-        return False
-    avg_b, avg_g, _ = cv2.mean(region)[:3]
-    # 按钮底板是蓝紫色：蓝通道明显高于绿通道
-    return avg_b > 110 and avg_b - avg_g > 40
+        return []
+
+    blue = region[:, :, 0].astype(int)
+    green = region[:, :, 1].astype(int)
+    red = region[:, :, 2].astype(int)
+    # 猫头图标是近白色，三通道都高且彼此接近
+    white = (
+        (blue > 190) & (green > 190) & (red > 190)
+        & (np.abs(blue - green) < 30)
+        & (np.abs(green - red) < 30)
+        & (np.abs(blue - red) < 30)
+    )
+
+    visited = np.zeros(white.shape, dtype=bool)
+    buttons = []
+    rows, cols = np.where(white)
+    for start_y, start_x in zip(rows.tolist(), cols.tolist()):
+        if visited[start_y, start_x]:
+            continue
+        stack = [(start_y, start_x)]
+        visited[start_y, start_x] = True
+        points = []
+        while stack:
+            y, x = stack.pop()
+            points.append((y, x))
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    ny, nx = y + dy, x + dx
+                    if not (0 <= ny < white.shape[0] and 0 <= nx < white.shape[1]):
+                        continue
+                    if white[ny, nx] and not visited[ny, nx]:
+                        visited[ny, nx] = True
+                        stack.append((ny, nx))
+        if len(points) < 120:
+            continue
+        ys = [point[0] for point in points]
+        xs = [point[1] for point in points]
+        box_w = max(xs) - min(xs) + 1
+        box_h = max(ys) - min(ys) + 1
+        # 猫头图标是接近方形的小图块
+        if not (20 <= box_w <= 140 and 20 <= box_h <= 140):
+            continue
+        if not (0.5 <= box_w / box_h <= 1.8):
+            continue
+        if len(points) / (box_w * box_h) < 0.15:
+            continue
+        buttons.append((
+            (min(xs) + max(xs)) / 2 / width,
+            (min(ys) + max(ys)) / 2 / height + top / height,
+        ))
+
+    buttons.sort(key=lambda item: item[0])
+    return buttons
 
 
 def handle_battle_event_choice(task: TriggerTask):
