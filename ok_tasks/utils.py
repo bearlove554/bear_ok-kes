@@ -4595,6 +4595,97 @@ def _is_chest_button(task: TriggerTask, cx, cy):
     return avg_b > 110 and avg_b - avg_g > 40
 
 
+def handle_battle_event_choice(task: TriggerTask):
+    """战斗中三选一事件页面：按任务优先级在三个选项卡中选一个。
+
+    该页面的选项卡没有 event1~event9 对应的凹槽高亮，模板匹配最高只有
+    0.73，达不到正常阈值，recognize_event_options 会返回空；而它又带有
+    战斗手牌数，会被 handle_event_task 开头的守卫挡掉、被 handle_battle_page
+    吞掉，最终无人处理而卡住。这里改用文字位置识别页面。
+    """
+    # 三个选项卡的标题都落在 y≈0.79 这一行，且横向三段并列
+    title_band = (0.776, 0.836)
+    titles = [
+        box for box in task.all_texts
+        if title_band[0] <= (box.y + box.height / 2) / task.height <= title_band[1]
+        and 0.060 <= (box.x + box.width / 2) / task.width <= 0.900
+        and len(box.name.strip()) >= 2
+    ]
+    if len(titles) < 3:
+        return False
+
+    # 按横向位置聚成三列，每列取最靠上的一条作为标题
+    titles.sort(key=lambda box: box.x)
+    columns = []
+    for box in titles:
+        center_x = (box.x + box.width / 2) / task.width
+        if columns and center_x - columns[-1]["right"] < 0.12:
+            columns[-1]["boxes"].append(box)
+            columns[-1]["right"] = center_x
+        else:
+            columns.append({"boxes": [box], "right": center_x})
+    if len(columns) != 3:
+        return False
+
+    # 三个选项卡的描述区：标题下方到卡片底部
+    options = []
+    for column in columns:
+        column["boxes"].sort(key=lambda box: box.y)
+        title_box = column["boxes"][0]
+        title_text = title_box.name.strip()
+        center_x = (title_box.x + title_box.width / 2) / task.width
+        description_region = (
+            max(0.0, center_x - 0.125),
+            0.818,
+            min(1.0, center_x + 0.125),
+            0.940,
+        )
+        options.append({
+            "title": title_text,
+            "description": title_text + _get_region_text(task, description_region),
+            "x": center_x,
+        })
+
+    for option in options:
+        task.log_info(f"战斗中三选一事件选项: 「{option['description']}」")
+
+    # 拉黑
+    blacklist = _get_card_list(task, "拉黑任务")
+    if blacklist:
+        filtered = [
+            option for option in options
+            if not any(is_subsequence(word, option["description"]) for word in blacklist)
+        ]
+        if filtered:
+            options = filtered
+
+    # 按装备与任务优先级匹配
+    priority = []
+    for slot in range(1, 4):
+        priority.extend(_get_card_list(task, f"装备{slot}号位优先级"))
+    priority.extend(_get_card_list(task, "任务优先级"))
+
+    chosen = next(
+        (
+            option for keyword in priority
+            for option in options
+            if keyword and is_subsequence(keyword, option["description"])
+        ),
+        None,
+    )
+    if chosen is None:
+        chosen = random.choice(options)
+        task.log_info(
+            f"未命中任务优先级，随机选择「{chosen['description']}」"
+        )
+    else:
+        task.log_info(f"命中任务优先级，选择「{chosen['description']}」")
+
+    _move_and_click(task, chosen["x"], 0.870)
+    task.sleep(1)
+    return True
+
+
 def handle_non_battle_page(task: TriggerTask):
     """非出击/卡厄思页面: 检测到故事/营救/方舟城市时自动停止当前模式，优先级最高。"""
     box = find_box_at_point(task, 0.887, 0.160)

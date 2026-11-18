@@ -26,6 +26,7 @@ from utils import (
     _finish_only_first_layer,
     handle_auto_stop,
     handle_treasure_room,
+    handle_battle_event_choice,
 )
 from utils_chaos import handle_archive_target_member
 
@@ -1017,6 +1018,7 @@ PAGE_HANDLERS = [
     handle_card_function_select,
     handle_return_to_draw_pile,
     handle_weakness_info,
+    handle_battle_event_choice, #战斗中三选一事件，必须先于战斗页处理
     handle_battle_page,
     handle_settlement,
     handle_destiny_choice,

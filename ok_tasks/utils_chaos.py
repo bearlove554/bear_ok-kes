@@ -22,6 +22,7 @@ from utils import (
     handle_shop,
     handle_escape,
     handle_treasure_room,
+    handle_battle_event_choice,
     # handle_stage_clear,
     handle_auto_stop,
 )
@@ -1268,6 +1269,7 @@ PAGE_HANDLERS = [
     handle_weakness_info,
     handle_non_battle_page,
     handle_battle_crash,
+    handle_battle_event_choice, #战斗中三选一事件，必须先于战斗页处理
     handle_battle_auto_check,
     handle_settlement,
     handle_destiny_choice,
