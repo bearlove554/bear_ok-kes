@@ -1037,6 +1037,28 @@ def handle_treat_approve(task: TriggerTask):
     return False
 
 
+def handle_tactic_trustee_confirm(task: TriggerTask):
+    """战术托管确认弹窗: 点击弹窗右下角的「进入」。
+
+    该弹窗的「进入」按钮位于画面高度约0.66处，低于handle_enter的搜索区域
+    (0.771~0.992)，若不在此处单独处理会被画面卡住兜底反复误点。
+    """
+    dialog_text = _get_region_text(task, (0.30, 0.30, 0.70, 0.50))
+    if _get_game_text(task, '战术托管') not in dialog_text:
+        return False
+    candidates = [
+        b for b in task.all_texts
+        if _clean_match(b.name, "进入")
+        and (b.y + b.height / 2) / task.height > 0.55
+    ]
+    if not candidates:
+        return False
+    box = max(candidates, key=lambda b: b.y)
+    task.log_info("检测到战术托管确认弹窗，点击进入")
+    task.click_box(box)
+    task.sleep(1)
+    return True
+
 def handle_go_to_chaos_core(task: TriggerTask):
     """前往卡厄思核心按钮。"""
     box = find_box_at_point(task, 0.945, 0.918)
@@ -1232,6 +1254,8 @@ PAGE_HANDLERS = [
     # handle_stage_clear,
     log_credit,
     log_node_status,
+    handle_tactic_trustee_confirm, #战术托管确认弹窗，必须先于画面卡住兜底
+    handle_held_cards_page, #持有卡牌/队伍卡牌页面，必须先于画面卡住兜底
     handle_stuck_log, #画面卡住检测及兜底处理
     handle_close_page, #点击屏幕关闭页面，优先于其他普通页面处理
 
@@ -1305,7 +1329,6 @@ PAGE_HANDLERS = [
     handle_copy_card_choice,
     handle_skip,
     handle_event_task,
-    handle_held_cards_page,
     handle_escape,
     handle_stage_end_data_details, #关卡结束数据详情页面，低优先级
 ]

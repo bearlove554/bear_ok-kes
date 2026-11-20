@@ -163,14 +163,25 @@ def _get_route_priority(task: TriggerTask):
 # ------------------------- 通用工具 -------------------------
 
 def _get_current_credit(task: TriggerTask):
-    """读取当前信用点数，从两个可能位置取最大值。"""
+    """读取当前信用点数。
+
+    原实现用两个固定点位读取，但金币数字框会随界面/分辨率在顶部货币栏
+    左右移动（实测框中心约 x=0.696、y=0.077，而旧点位 x=0.794/0.734
+    均落在框外），导致余额被读成 0，进而使商店"移除卡牌"因余额不足被跳过。
+    改为在顶部货币栏区域内搜索数字框并取最大值：
+    - 区域覆盖旧点位与新位置，兼容不同布局；
+    - 生命值"3230/3230"含斜杠不是纯数字，票券等小额数字取最大值时会被
+      信用点覆盖，均不会误读。
+    """
     credit = 0
-    for pos_x, pos_y in [(0.794, 0.054), (0.734, 0.053)]:
-        box = find_box_at_point(task, pos_x, pos_y)
-        if box and box.name.isdigit():
-            val = int(box.name)
-            if val > credit:
-                credit = val
+    for box in task.all_texts:
+        center_x = (box.x + box.width / 2) / task.width
+        center_y = (box.y + box.height / 2) / task.height
+        if not (0.55 <= center_x <= 0.82 and 0.03 <= center_y <= 0.12):
+            continue
+        name = box.name.strip()
+        if name.isdigit():
+            credit = max(credit, int(name))
     return credit
 
 
@@ -473,7 +484,7 @@ def recognize_cards_in_deck(
 
 def recognize_event_options(
     task: TriggerTask,
-    region=(0.198, 0.840, 0.803, 1.000),
+    region=(0.100, 0.700, 0.960, 1.000),
     page="",
 ):
     """按事件选项特征识别最多三个事件描述。"""
@@ -3146,7 +3157,7 @@ def handle_copy(task: TriggerTask):
 
 def handle_enter(task: TriggerTask):
     """通用"进入"按钮。"""
-    enter_region = (0.017, 0.771, 0.996, 0.992)
+    enter_region = (0.017, 0.760, 0.996, 0.996)
     box = next(
         (
             text_box
@@ -3226,12 +3237,17 @@ def handle_event_task(task: TriggerTask):
         task.log_info("事件任务页面的所有选项均被禁止，跳过本次选择")
         return False
 
-    check_region = task.box_of_screen(0.396, 0.286, 0.960, 0.718)
-    check_features = [
-        feature
-        for feature_name in ("check", "check2")
-        if (feature := task.find_one(feature_name=feature_name, box=check_region))
-    ]
+    # check/check2 图标(右上角放大镜)在本页面稳定误命中约0.83，且点击无任何效果。
+    # 仅在确实没有可选项时才作为兜底使用，避免占住页面导致死循环。
+    has_selectable = bool(tasks_info)
+    check_region = task.box_of_screen(0.396, 0.286, 0.960, 0.718) if not has_selectable else None
+    check_features = []
+    if check_region is not None:
+        check_features = [
+            feature
+            for feature_name in ("check", "check2")
+            if (feature := task.find_one(feature_name=feature_name, box=check_region))
+        ]
     check_feature = max(
         check_features,
         key=lambda feature: feature.confidence,
@@ -3246,10 +3262,25 @@ def handle_event_task(task: TriggerTask):
         return True
 
     def click_event_option(event_task):
+        # 三选一页面优先选择最右侧(第三项)：左侧/中间项多为「确认信息」等
+        # 只加状态、不推进事件的选项，选中后本页会原样重来。
+        rightmost = max(tasks_info, key=lambda item: item["x"])
+        if rightmost is not event_task:
+            task.log_info(
+                f"三选一页面优先选择第三项(最右)，改选「{rightmost['description']}」"
+            )
+            event_task = rightmost
         left, top, right, bottom = event_task["description_region"]
         description_x = (left + right) / 2
         description_y = (top + bottom) / 2
+        # 事件选项需要二次点击: 第一次选中，第二次确认，只点一次不生效。
         _move_and_click(task, description_x, description_y)
+        task.sleep(1)
+        task.log_info(
+            f"事件选项卡二次点击确认「{event_task['description'][:20]}」"
+            f"({description_x:.3f}, {description_y:.3f})"
+        )
+        task.click(description_x, description_y)
 
     # 已经进过「精密加工记忆」页面后，优先选择「就此离开」结束事件，避免反复进入造成死循环
     event_status = getattr(task, "node_status", {})
@@ -3299,11 +3330,13 @@ def handle_event_task(task: TriggerTask):
     if reward_features:
         task.log_info(f"检测到事件任务区域中有{reward_features[0].name}特征，优先点击")
         reward_feature = reward_features[0]
-        _move_and_click(
-            task,
-            (reward_feature.x + reward_feature.width / 2) / task.width,
-            (reward_feature.y + reward_feature.height / 2) / task.height,
-        )
+        reward_x = (reward_feature.x + reward_feature.width / 2) / task.width
+        reward_y = (reward_feature.y + reward_feature.height / 2) / task.height
+        # 该页面同样需要二次点击: 第一次选中，第二次确认，只点一次不会推进。
+        _move_and_click(task, reward_x, reward_y)
+        task.sleep(1)
+        task.log_info(f"事件任务奖励选项二次点击确认({reward_x:.3f}, {reward_y:.3f})")
+        task.click(reward_x, reward_y)
         task.sleep(2)
         return True
 
@@ -3468,6 +3501,21 @@ def handle_route_selection(task: TriggerTask):
         feature_name="finalboss",
         box=route_box,
     )
+
+    # 兜底判定：finalboss 模板裁自左下角小地图上的 boss 标记，正常情况下只会
+    # 出现在左下角小地图里，右侧可点击节点区域（route_box）中通常匹配不到，
+    # 于是每一层都识别不到 boss、落进下面的兜底分支原地卡死。因此当右侧一个
+    # 可点击节点都没识别到时，改到左下角小地图区域里搜索 boss 标记来判定。
+    # 注意：find_feature 不传 box 时并不是全屏搜索，而是只在标注坐标附近按
+    # horizontal_variance/vertical_variance 的小窗口里搜索，而小地图上的标记
+    # 位置会随层数/地图变化，所以这里必须显式限定小地图区域。
+    # 只在 nodes 为空时启用，不影响正常节点的识别与点击。
+    if not final_boss_feature and not nodes:
+        minimap_box = task.box_of_screen(0.03, 0.58, 0.42, 0.99)
+        final_boss_feature = task.find_feature(
+            feature_name="finalboss",
+            box=minimap_box,
+        )
     if final_boss_feature:
         task.log_info("检测到最终boss节点，点击进入")
         if hasattr(task, 'node_status'):
@@ -4508,11 +4556,25 @@ def handle_card_assign(task: TriggerTask):
     return False
 
 def handle_held_cards_page(task: TriggerTask):
-    """持有卡牌页面: 检测到持有卡牌则关闭页面。"""
-    box = find_box_at_point(task, 0.500, 0.056)
-    if box and box.name == _get_game_text(task, '持有卡牌'):
-        task.log_info("检测到持有卡牌页面，点击关闭")
-        _move_and_click(task, 0.966, 0.053)
+    """持有卡牌页面: 检测到持有卡牌/队伍卡牌则关闭页面。
+
+    标题在左上角(约 0.12, 0.046)，不同版本写作「持有卡牌」或「队伍卡牌」，
+    因此按标题文字在整个顶栏内匹配，不再绑定单一坐标与单一文案。
+    """
+    title_keywords = (
+        _get_game_text(task, '持有卡牌'),
+        '队伍卡牌',
+    )
+    for text_box in task.all_texts:
+        center_y = (text_box.y + text_box.height / 2) / task.height
+        center_x = (text_box.x + text_box.width / 2) / task.width
+        if center_y > 0.10 or center_x > 0.40:
+            continue
+        if not any(keyword in text_box.name for keyword in title_keywords):
+            continue
+        task.log_info("检测到持有卡牌页面，按ESC关闭")
+        task.send_key('esc')
+        task.sleep(1)
         return True
     return False
 
@@ -4678,6 +4740,43 @@ def _purple_ring_ratio(frame, cx, cy):
     return purple.sum() / (region.shape[0] * region.shape[1])
 
 
+def _is_battle_event_page(task: TriggerTask):
+    """判断当前是否为战斗中三选一事件页面。
+
+    依据: 三个选项卡并排，其卡片背景是深色圆角块，且整页没有战斗手牌
+    计数(左下角 x/y)。队伍卡牌、配置队伍等页面底部同样有三段文字，
+    必须靠这两点区分，否则会在原地反复空点。
+    """
+    if task.frame is None:
+        return False
+
+    band_top, band_bottom = 0.720, 0.900
+    frame = task.frame[:, :, :3]
+    height, width = frame.shape[:2]
+
+    # 卡片区域应当整体偏暗(深色选项卡底)，纯白/浅灰页面直接排除
+    roi = frame[
+        int(band_top * height):int(band_bottom * height),
+        int(0.10 * width):int(0.90 * width),
+    ]
+    if roi.size == 0:
+        return False
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    if float(np.mean(gray)) > 150:
+        return False
+
+    # 战斗界面左下角有手牌计数，三选一事件页没有
+    hand_region = frame[
+        int(0.95 * height):height,
+        int(0.20 * width):int(0.80 * width),
+    ]
+    if hand_region.size:
+        hand_gray = cv2.cvtColor(hand_region, cv2.COLOR_BGR2GRAY)
+        if float(np.mean(hand_gray)) < 60:
+            return False
+
+    return True
+
 def handle_battle_event_choice(task: TriggerTask):
     """战斗中三选一事件页面：按任务优先级在三个选项卡中选一个。
 
@@ -4686,6 +4785,12 @@ def handle_battle_event_choice(task: TriggerTask):
     战斗手牌数，会被 handle_event_task 开头的守卫挡掉、被 handle_battle_page
     吞掉，最终无人处理而卡住。这里改用文字位置识别页面。
     """
+    # 守卫: 只有真正的三选一事件页才有三列并排的选项。
+    # 其他页面(队伍卡牌/配置队伍等)底部也会出现三段文字，曾把
+    # 「60预设回0.8N」这类数值噪声当成选项，导致在原地空点。
+    if not _is_battle_event_page(task):
+        return False
+
     # 三个选项卡的标题都落在 y≈0.79 这一行，且横向三段并列
     title_band = (0.776, 0.836)
     titles = [
@@ -4727,10 +4832,59 @@ def handle_battle_event_choice(task: TriggerTask):
             "title": title_text,
             "description": title_text + _get_region_text(task, description_region),
             "x": center_x,
+            "title_box": title_box,
         })
 
     for option in options:
         task.log_info(f"战斗中三选一事件选项: 「{option['description']}」")
+
+    # 被划线的选项不可选: 其标题亮度明显偏低(实测可选 p95≈255，禁止 p95≈203)。
+    # OCR 只能读到文字，读不到删除线和整卡变灰，必须用亮度判定。
+    if task.frame is not None:
+        frame = task.frame[:, :, :3]
+        usable = []
+        for option in options:
+            box = option["title_box"]
+            patch = frame[
+                max(0, box.y):box.y + box.height,
+                max(0, box.x):box.x + box.width,
+            ]
+            if patch.size == 0:
+                usable.append(option)
+                continue
+            gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+            peak = float(np.percentile(gray, 95))
+            option["peak"] = peak
+            if peak >= 235:
+                usable.append(option)
+            else:
+                task.log_info(
+                    f"战斗中三选一事件选项: 选项被禁用(亮度{peak:.0f})，跳过「{option['title']}」"
+                )
+        if usable:
+            options = usable
+        else:
+            task.log_info("战斗中三选一事件选项: 全部选项均被禁用，等待下一帧")
+            return False
+
+    # 剔除自带「事件重复」的选项: 选中后会原样回到本页面，形成死循环。
+    repeat_keyword = _get_game_text(task, "事件重复")
+    repeat_free = [
+        option for option in options
+        if repeat_keyword not in option["description"]
+    ]
+    if repeat_free:
+        if len(repeat_free) != len(options):
+            dropped = [
+                option["title"] for option in options
+                if option not in repeat_free
+            ]
+            task.log_info(
+                f"战斗中三选一事件选项: 已剔除会导致事件重复的选项 {dropped}"
+            )
+        options = repeat_free
+    else:
+        task.log_info("战斗中三选一事件选项: 全部选项都会导致事件重复，按原列表选择")
 
     # 拉黑
     blacklist = _get_card_list(task, "拉黑任务")
@@ -4764,7 +4918,12 @@ def handle_battle_event_choice(task: TriggerTask):
     else:
         task.log_info(f"命中任务优先级，选择「{chosen['description']}」")
 
+    # 该页面的选项卡需要二次点击才生效: 第一次选中，第二次确认。
+    # 只点一次会被下一帧重新识别覆盖，随机选择来回跳动导致永远无法确认。
     _move_and_click(task, chosen["x"], 0.870)
+    task.sleep(1)
+    task.log_info(f"战斗中三选一事件: 二次点击确认「{chosen['title']}」")
+    task.click(chosen["x"], 0.870)
     task.sleep(1)
     return True
 
