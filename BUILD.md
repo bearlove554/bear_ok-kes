@@ -22,37 +22,64 @@ python -m ok.update.inline_ok_requirements
 ### 2. 执行 PyInstaller 打包
 
 ```bash
-pyinstaller --onefile --noconsole --uac-admin --noupx --runtime-tmpdir "C:\Temp\ok_kes" --name "ok-kes-win32-portable-v1.3.1" --icon icons/icon.ico ^
-  --add-data assets;assets ^
-  --add-data i18n;i18n ^
-  --add-data ok_tasks;ok_tasks ^
-  --add-data "C:\Users\baoxin\miniconda3\envs\oknikke\Lib\site-packages\opencc\clib;opencc\clib" ^
-  --add-data "C:\Users\baoxin\miniconda3\envs\oknikke\Lib\site-packages\opencc\clib\share\opencc;opencc\lib\share\opencc" ^
+pyinstaller --onefile --noconsole --uac-admin --noupx --noconfirm ^
+  --runtime-tmpdir "C:\Temp\ok_kes" ^
+  --name "ok-kes-win32-portable-v2.0.0" ^
+  --icon icons/icon.ico ^
+  --add-data "i18n;i18n" ^
+  --add-data "ok_tasks;ok_tasks" ^
+  --add-data ".venv\Lib\site-packages\opencc\clib;opencc\clib" ^
+  --add-data ".venv\Lib\site-packages\opencc\clib\share\opencc;opencc\lib\share\opencc" ^
   --hidden-import ok_tasks.SortieMode ^
   --hidden-import ok_tasks.ChaosMode ^
   --hidden-import utils_sortie ^
   --hidden-import utils_chaos ^
   --hidden-import src.globals ^
   --hidden-import src.tasks.MyOneTimeTask ^
+  --hidden-import src.ui.RealtimeLogTab ^
+  --hidden-import src.ui.realtime_log_core ^
   --hidden-import onnxocr ^
   --hidden-import onnxocr_ppocrv5 ^
   --exclude-module PySide6.translations ^
   --collect-all onnxocr ^
   --collect-all onnxruntime ^
+  --collect-all openvino ^
   --collect-all pyappify ^
   main.py
 ```
+
+> 与旧版命令的差异（均为必须项）：
+> - `--collect-all openvino`：否则缺 `openvino_onnx_frontend.dll` / `openvino_intel_cpu_plugin.dll`，OCR 初始化直接失败。
+> - `--hidden-import src.ui.RealtimeLogTab` / `realtime_log_core`：`custom_tabs` 用字符串动态实例化，PyInstaller 静态扫不到，不写就会运行时 `ModuleNotFoundError`。
+> - `--add-data assets;assets` 已删除：`assets` 实际位于 `ok_tasks/assets`，由 `--add-data ok_tasks;ok_tasks` 一并打入。
 
 ### 3. 清理临时文件
 
 ```bash
 rmdir /s /q build
-del "ok-kes-win32-portable-v1.3.1.spec"
+del "ok-kes-win32-portable-v2.0.0.spec"
 ```
 
 ### 4. 产物
 
-位于 `dist\ok-kes-win32-portable-v1.3.1.exe`，约 265 MB。
+位于 `dist\ok-kes-win32-portable-v2.0.0.exe`，约 216 MB。
+
+### 5. 归档自检（发包前必做）
+
+用 PyInstaller 自带的 `CArchiveReader` 读回 exe，与稳定的旧版本基线做差集，确认没有静默丢文件：
+
+```python
+from PyInstaller.archive.readers import CArchiveReader
+a = CArchiveReader(r"dist\ok-kes-win32-portable-v2.0.0.exe")
+toc = set(a.toc.keys())                                  # DLL / PYD / 资源清单
+pyz = set(a.open_embedded_archive("PYZ.pyz").toc.keys())  # 冻结的 .py 模块清单
+```
+
+要点：
+- 归档名是 `PYZ.pyz`，不是 `PYZ-00.pyz`（后者只是 build 目录里的中间文件）。
+- 预期基线量级：`.dll` 92、`.pyd` 73、PYZ 模块 1635，缺失应为 0。
+- `ok_tasks.*` 不进 PYZ 属正常：它以 `--add-data` 数据目录形式解压到 `_MEIPASS`，运行时从文件系统导入。
+- 必查 `openvino\libs\*.dll`、`ok_tasks\assets\images\engraving_*.png`（刻印刷取硬依赖）、`opencc\**\t2s.json`。
 
 ## 关键说明
 
