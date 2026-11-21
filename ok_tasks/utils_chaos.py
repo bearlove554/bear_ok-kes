@@ -1523,6 +1523,22 @@ def _precision_button_active(task: TriggerTask, box):
     return (red - blue) > 30
 
 
+def _current_memory_matches_keywords(task, keywords):
+    """识别精密加工记忆页当前卡，返回命中的加工记忆词条。
+
+    识别不到卡牌时返回 (None, False)：第二位表示识别是否成功，
+    调用方据此在识别失败时采取保守策略，避免把已有好卡换掉。
+    """
+    cards = recognize_cards(
+        task, region=(0.366, 0.233, 0.639, 0.500), page="精密加工记忆页面"
+    )
+    for card in cards:
+        matched = _card_matches_memory_keywords(card, keywords)
+        if matched:
+            return matched, True
+    return None, bool(cards)
+
+
 def handle_precision_memory_process(task: TriggerTask):
     """记忆之末「精密加工记忆（记忆雕琢）」页面: 开启加工记忆时先转换词条，再点击右侧雕琢强化。"""
     title_text = _get_region_text(task, (0.400, 0.080, 0.600, 0.170)).replace(" ", "")
@@ -1540,30 +1556,44 @@ def handle_precision_memory_process(task: TriggerTask):
     already_processed = isinstance(status, dict) and status.get("memory_process_done", False)
 
     if enable_process and keywords and not already_processed:
-        # 即使当前卡已命中词条，也先点左下角「加工记忆」看有没有更优词条
-        # （例如当前 +7%，加工后可能出现 +11%）。只尝试一次，由 memory_process_done
-        # 保证回来后不再重复点左侧，避免死循环。
-        process_keywords = {"加工记忆", "记忆加工", _get_game_text(task, "加工记忆")}
-        process_box = next(
-            (
-                box for box in task.all_texts
-                if 0.020 <= (box.x + box.width / 2) / task.width <= 0.315
-                and 0.708 <= (box.y + box.height / 2) / task.height <= 0.867
-                and any(kw in box.name for kw in process_keywords if kw)
-            ),
-            None,
-        )
-        if process_box and _precision_button_active(task, process_box):
-            task.log_info("优先点击左侧「记忆加工」，查看是否有更优加工词条")
+        matched, recognized = _current_memory_matches_keywords(task, keywords)
+        if matched:
+            # 当前卡已命中目标词条，直接雕琢。不能为了"数值更高"去加工：
+            # 加工选项里数值更高的可能是不同属性（如伤害总量+13% vs 攻击力+8%），
+            # 而同属性的选项反而数值更低（攻击力+5%），会把已有好卡换差。
+            task.log_info(
+                f"当前记忆卡已命中加工记忆词条「{matched}」，直接精密加工，不做词条转换"
+            )
             if isinstance(status, dict):
                 status["memory_process_done"] = True
-            _move_and_click(
-                task,
-                (process_box.x + process_box.width / 2) / task.width,
-                (process_box.y + process_box.height / 2) / task.height,
+        elif recognized:
+            # 当前卡识别成功但未命中目标词条，才点左下角「加工记忆」转换词条。
+            # 只尝试一次，由 memory_process_done 保证回来后不再重复点左侧。
+            process_keywords = {"加工记忆", "记忆加工", _get_game_text(task, "加工记忆")}
+            process_box = next(
+                (
+                    box for box in task.all_texts
+                    if 0.020 <= (box.x + box.width / 2) / task.width <= 0.315
+                    and 0.708 <= (box.y + box.height / 2) / task.height <= 0.867
+                    and any(kw in box.name for kw in process_keywords if kw)
+                ),
+                None,
             )
-            task.sleep(1.5)
-            return True
+            if process_box and _precision_button_active(task, process_box):
+                task.log_info("当前卡未命中目标词条，点击左侧「记忆加工」转换词条")
+                if isinstance(status, dict):
+                    status["memory_process_done"] = True
+                _move_and_click(
+                    task,
+                    (process_box.x + process_box.width / 2) / task.width,
+                    (process_box.y + process_box.height / 2) / task.height,
+                )
+                task.sleep(1.5)
+                return True
+        else:
+            task.log_info("精密加工记忆页当前卡识别失败，保守起见不转换词条，直接雕琢")
+            if isinstance(status, dict):
+                status["memory_process_done"] = True
 
     region = (0.700, 0.730, 0.995, 0.870)
     done_box = next(
