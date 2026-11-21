@@ -4,6 +4,7 @@ import os
 import traceback
 from src.config import config
 from src.ui.SponsorDialog import install_sponsor_dialog
+import src.ui.RealtimeLogTab  # noqa: F401  # 静态导入，保证 PyInstaller 收集实时日志标签页
 
 
 def redirect_log_to_exe_dir(exe_dir):
