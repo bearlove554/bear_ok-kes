@@ -2730,10 +2730,6 @@ def _should_install_equipment(task, current_name, current_quality, new_equipment
     priority = new_equipment["priority"]
     _, current_rank = _match_equipment_name(current_name, priority)
     new_rank = new_equipment["rank"]
-    # 当前槽位品质已识别但名字没被记录/识别时，优先级无法比较。
-    # 此时禁止非优先级装备替换，避免把用户想要的装备悄悄换掉。
-    if not current_name and current_quality and new_rank is None:
-        return False, "当前装备名未识别且新装备不在优先级列表，禁止替换"
     if new_rank is not None or current_rank is not None:
         if new_rank is not None and (
             current_rank is None or new_rank < current_rank
@@ -5082,7 +5078,35 @@ def reset_mission_status(task: TriggerTask):
         task.node_status['total_rounds'] = keep['total_rounds']
         task.node_status['success_rounds'] = keep['success_rounds']
         task.node_status['save_target_member'] = keep['save_target_member']
+
+    # 任务结算后游戏内装备仍在，名字必须在跨局时保留：
+    # 否则只剩品质、没有名字，优先级比对失效，目标装备会被池外装备换掉。
+    old_member_status = getattr(task, "member_status", None)
+    old_equipment = (
+        old_member_status.get("equipment")
+        if isinstance(old_member_status, dict) else None
+    )
     task.member_status = _initial_member_status()
+    if isinstance(old_equipment, dict):
+        old_engravings = old_equipment.get("engravings", [])
+        engravings = []
+        for index in range(3):
+            item = (
+                old_engravings[index]
+                if index < len(old_engravings) and isinstance(old_engravings[index], dict)
+                else {}
+            )
+            engravings.append({
+                "type": str(item.get("type", "") or ""),
+                "text": str(item.get("text", "") or ""),
+                "rank": item.get("rank") if isinstance(item.get("rank"), int) else None,
+            })
+        task.member_status["equipment"] = {
+            "names": (list(old_equipment.get("names", [])) + ["", "", ""])[:3],
+            "descriptions": (list(old_equipment.get("descriptions", [])) + ["", "", ""])[:3],
+            "qualities": (list(old_equipment.get("qualities", [])) + ["", "", ""])[:3],
+            "engravings": engravings,
+        }
     _reset_meditation_state(task)
     task._pending_removed_card_count = 0
     task._season_observe_clicked = False
