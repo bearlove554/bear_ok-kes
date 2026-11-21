@@ -3815,6 +3815,8 @@ def handle_event_task(task: TriggerTask):
         if leave_task is not None:
             task.log_info("已进入过精密加工记忆/雕琢记忆，选择「离开」结束事件")
             click_event_option(leave_task)
+            # 本地修复：选离开后立刻清标记，避免同一节点内后续事件反复选离开卡死
+            event_status["precision_memory_visited"] = False
             task.sleep(1)
             return True
     else:
