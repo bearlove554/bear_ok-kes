@@ -3796,15 +3796,18 @@ def handle_event_task(task: TriggerTask):
         task.sleep(1)
         return True
 
-    def click_event_option(event_task):
+    def click_event_option(event_task, force_rightmost=True):
         # 三选一页面优先选择最右侧(第三项)：左侧/中间项多为「确认信息」等
         # 只加状态、不推进事件的选项，选中后本页会原样重来。
-        rightmost = max(tasks_info, key=lambda item: item["x"])
-        if rightmost is not event_task:
-            task.log_info(
-                f"三选一页面优先选择第三项(最右)，改选「{rightmost['description']}」"
-            )
-            event_task = rightmost
+        # 但显式优先级（如「精密加工记忆」「就此离开」）不能被这条通用规则覆盖，
+        # 否则两选项事件里会把左边的「精密加工记忆」改成最右的「就此离开」。
+        if force_rightmost:
+            rightmost = max(tasks_info, key=lambda item: item["x"])
+            if rightmost is not event_task:
+                task.log_info(
+                    f"三选一页面优先选择第三项(最右)，改选「{rightmost['description']}」"
+                )
+                event_task = rightmost
         left, top, right, bottom = event_task["description_region"]
         description_x = (left + right) / 2
         description_y = (top + bottom) / 2
@@ -3833,7 +3836,7 @@ def handle_event_task(task: TriggerTask):
         )
         if leave_task is not None:
             task.log_info("已进入过精密加工记忆/雕琢记忆，选择「离开」结束事件")
-            click_event_option(leave_task)
+            click_event_option(leave_task, force_rightmost=False)
             # 本地修复：选离开后立刻清标记，避免同一节点内后续事件反复选离开卡死
             event_status["precision_memory_visited"] = False
             task.sleep(1)
@@ -3854,7 +3857,7 @@ def handle_event_task(task: TriggerTask):
             task.log_info(
                 f"尚未进入过精密加工记忆，优先选择「{sculpt_task['description']}」"
             )
-            click_event_option(sculpt_task)
+            click_event_option(sculpt_task, force_rightmost=False)
             task.sleep(1)
             return True
 

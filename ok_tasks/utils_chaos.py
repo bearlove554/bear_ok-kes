@@ -1530,10 +1530,6 @@ def handle_precision_memory_process(task: TriggerTask):
     if precision_memory_text not in title_text and "精密加工" not in title_text and "记忆雕琢" not in title_text:
         return False
 
-    cards = recognize_cards(
-        task, region=(0.366, 0.233, 0.639, 0.500), page="精密加工记忆页面"
-    )
-
     # 记录已进入过该页面，避免事件对话反复选择「精密加工记忆」造成死循环
     status = getattr(task, "node_status", None)
     if isinstance(status, dict):
@@ -1544,39 +1540,30 @@ def handle_precision_memory_process(task: TriggerTask):
     already_processed = isinstance(status, dict) and status.get("memory_process_done", False)
 
     if enable_process and keywords and not already_processed:
-        matched_kw = None
-        for card in cards:
-            matched_kw = _card_matches_memory_keywords(card, keywords)
-            if matched_kw:
-                break
-        if matched_kw:
-            task.log_info(
-                f"当前记忆卡牌已命中加工记忆词条「{matched_kw}」，无需记忆加工，直接进行记忆雕琢"
-            )
+        # 即使当前卡已命中词条，也先点左下角「加工记忆」看有没有更优词条
+        # （例如当前 +7%，加工后可能出现 +11%）。只尝试一次，由 memory_process_done
+        # 保证回来后不再重复点左侧，避免死循环。
+        process_keywords = {"加工记忆", "记忆加工", _get_game_text(task, "加工记忆")}
+        process_box = next(
+            (
+                box for box in task.all_texts
+                if 0.020 <= (box.x + box.width / 2) / task.width <= 0.315
+                and 0.708 <= (box.y + box.height / 2) / task.height <= 0.867
+                and any(kw in box.name for kw in process_keywords if kw)
+            ),
+            None,
+        )
+        if process_box and _precision_button_active(task, process_box):
+            task.log_info("优先点击左侧「记忆加工」，查看是否有更优加工词条")
             if isinstance(status, dict):
                 status["memory_process_done"] = True
-        else:
-            process_keywords = {"加工记忆", "记忆加工", _get_game_text(task, "加工记忆")}
-            process_box = next(
-                (
-                    box for box in task.all_texts
-                    if 0.020 <= (box.x + box.width / 2) / task.width <= 0.315
-                    and 0.708 <= (box.y + box.height / 2) / task.height <= 0.867
-                    and any(kw in box.name for kw in process_keywords if kw)
-                ),
-                None,
+            _move_and_click(
+                task,
+                (process_box.x + process_box.width / 2) / task.width,
+                (process_box.y + process_box.height / 2) / task.height,
             )
-            if process_box and _precision_button_active(task, process_box):
-                task.log_info("当前卡牌未命中加工记忆词条，点击左侧「记忆加工」转换词条")
-                if isinstance(status, dict):
-                    status["memory_process_done"] = True
-                _move_and_click(
-                    task,
-                    (process_box.x + process_box.width / 2) / task.width,
-                    (process_box.y + process_box.height / 2) / task.height,
-                )
-                task.sleep(1.5)
-                return True
+            task.sleep(1.5)
+            return True
 
     region = (0.700, 0.730, 0.995, 0.870)
     done_box = next(
