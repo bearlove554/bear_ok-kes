@@ -87,7 +87,19 @@ def _card_matches_memory_keywords(card, keywords):
 def handle_memory_process(task: TriggerTask):
     """加工记忆（记忆加工）页面：选择命中加工记忆词条的卡牌并确认返回，未命中则跳过。"""
     title = _get_region_text(task, (0.400, 0.070, 0.600, 0.175)).replace(" ", "")
-    process_title_keywords = {"加工记忆", "记忆加工", "记忆雕琢", _get_game_text(task, "加工记忆")}
+
+    # 「精密加工记忆」标题里也含「加工记忆」，且繁中标题是「记忆雕琢」，
+    # 必须显式排除，否则会抢在 handle_precision_memory_process 前面接管，
+    # 把单卡展示误判成新词条界面并反复点 (0.5, 0.9)，最终卡死。
+    precision_title_keywords = {
+        "精密加工",
+        _get_game_text(task, "精密加工记忆"),
+        _get_game_text(task, "记忆雕琢"),
+    }
+    if any(kw and kw in title for kw in precision_title_keywords):
+        return False
+
+    process_title_keywords = {"加工记忆", "记忆加工", _get_game_text(task, "加工记忆")}
     if not any(kw in title for kw in process_title_keywords if kw):
         return False
 

@@ -4482,7 +4482,16 @@ def handle_shop(task: TriggerTask):
             # 该状态一直是 False，会导致余额充足却跳过移除。直接读配置判断。
             enter_shop = _get_config_value(task, '进入商店', False)
             removal_handled = task.node_status.get('shop_removal_handled', False)
-            task.log_info(f"handle_shop: 当前信用点={current_credit}，进入商店配置={enter_shop}，本店已检查移除={removal_handled}")
+            # 付费移除与付费刷新共用同一条信用点保留线，避免低余额时还进去点移除
+            removal_credit_threshold = _get_config_value(task, "商店刷新信用点阈值", 300)
+            try:
+                removal_credit_threshold = int(removal_credit_threshold)
+            except (TypeError, ValueError):
+                removal_credit_threshold = 300
+            task.log_info(
+                f"handle_shop: 当前信用点={current_credit}，进入商店配置={enter_shop}，"
+                f"信用点阈值={removal_credit_threshold}，本店已检查移除={removal_handled}"
+            )
             cost_box = find_box_at_point(task, 0.724, 0.319)
             task.log_info(f"handle_shop: 0.724,0.319处费用文本='{cost_box.name if cost_box else None}'")
             if cost_box and cost_box.name.isdigit():
@@ -4499,8 +4508,11 @@ def handle_shop(task: TriggerTask):
                     )
                 elif removal_handled:
                     task.log_info("德朗商店: 本次进店已检查过移除卡牌（命中已移除或未命中已跳过），不再重复点击")
-                elif cost <= current_credit and enter_shop:
-                    task.log_info(f"德朗商店: 移除卡牌需{cost}信用点，当前{current_credit}，足够，点击移除")
+                elif cost <= current_credit and current_credit > removal_credit_threshold and enter_shop:
+                    task.log_info(
+                        f"德朗商店: 移除卡牌需{cost}信用点，当前{current_credit}超过阈值"
+                        f"{removal_credit_threshold}，点击移除"
+                    )
                     # 标记本次移除来源于商店：选牌页只按「移除卡牌列表」严格匹配，
                     # 无符合条件的卡牌则跳过（花钱且非强制）。事件移除不带此标记，
                     # 保持强制选择并可用兜底移除其他人的卡牌。
@@ -4512,8 +4524,16 @@ def handle_shop(task: TriggerTask):
                     return True
                 elif not enter_shop:
                     task.log_info("德朗商店: 「进入商店」配置未开启，跳过移除卡牌")
+                elif current_credit <= removal_credit_threshold:
+                    task.log_info(
+                        f"德朗商店: 当前信用点{current_credit}未超过阈值"
+                        f"{removal_credit_threshold}，不付费移除卡牌"
+                    )
                 else:
-                    task.log_info(f"德朗商店: 移除卡牌需{cost}信用点，当前{current_credit}，余额不足，继续挑选其他商品")
+                    task.log_info(
+                        f"德朗商店: 移除卡牌需{cost}信用点，当前{current_credit}，"
+                        "余额不足，继续挑选其他商品"
+                    )
             else:
                 task.log_info("handle_shop: 移除卡牌费用读取失败，继续挑选其他商品")
             task.node_status['shop'] = False

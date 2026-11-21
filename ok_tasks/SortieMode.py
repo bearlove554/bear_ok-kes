@@ -85,7 +85,8 @@ class SortieMode(TriggerTask):
         }
         self.config_description['游戏语言'] = "国际服请设置为繁体中文"
         self.config_description['商店刷新信用点阈值'] = (
-            "德朗商店免费刷新次数用完后，仅当信用点大于该值且足够支付刷新价格时才付费刷新。"
+            "德朗商店的信用点保留线：免费刷新次数用完后，仅当信用点大于该值且足够支付刷新价格时才付费刷新；"
+            "付费移除卡牌也沿用该阈值，信用点未超过时不再进店点移除。"
         )
 
     def load_config(self):
