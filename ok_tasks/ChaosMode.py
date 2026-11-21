@@ -81,6 +81,8 @@ class ChaosMode(TriggerTask):
                             "get_specific_flash": False,
                             "precision_memory_visited": False,
                             "removed_card_count": 0,
+                            "shop_removal_pending": False,
+                            "shop_removal_handled": False,
                             "neutral_card_count": 0}
         self.member_status = {
             "equipment": {

@@ -1275,17 +1275,23 @@ def _scroll_card_page(task: TriggerTask, x, y, amount, page, distance=0.25):
         task.sleep(0.5)
 
 
-def select_card(task: TriggerTask, card_names, count=1, action=""):
-    """使用卡组特征识别选择卡牌，支持滚动查找、基础牌移除和兜底选择。"""
+def select_card(task: TriggerTask, card_names, count=1, action="", strict=False):
+    """使用卡组特征识别选择卡牌，支持滚动查找、基础牌移除和兜底选择。
+
+    strict=True 用于商店付费移除：只按配置列表精确匹配，命中不到就跳过退出，
+    绝不走咒术牌/基础牌/任意牌兜底，避免花钱却删掉不需要的卡牌。
+    """
     selected = 0
     max_scrolls = 20
     page = f"select_card-{action}" if action else "select_card"
     prefer_remove_base = (
-        action == "移除"
+        not strict
+        and action == "移除"
         and _get_config_value(task, "优先移除基础牌", True)
     )
     prefer_target_member_row = (
-        action == "移除"
+        not strict
+        and action == "移除"
         and _get_config_value(task, "刷空档", False) is True
     )
     base_card_type = _get_game_text(task, "基础")
@@ -1479,6 +1485,35 @@ def select_card(task: TriggerTask, card_names, count=1, action=""):
                 continue
             task.log_info(f"{page}: 向下滚动后未识别到卡牌或操作按钮，终止选卡")
             return False
+
+    # 严格模式（商店付费移除）：配置列表未命中任何卡牌就跳过退出，不删牌、不花钱。
+    # 跳过/取消按钮与下方兜底共用同一区域，这里提前处理，避免误删其他卡牌。
+    if strict and selected < count:
+        task.all_texts = _simplify_texts(task.ocr())
+        action_box = task.box_of_screen(0.424, 0.882, 1.000, 0.999)
+        skip_button = next(
+            (
+                box for box in task.all_texts
+                if action_box.x <= box.x + box.width / 2 <= action_box.x + action_box.width
+                and action_box.y <= box.y + box.height / 2 <= action_box.y + action_box.height
+                and any(name in box.name for name in ("跳过", "取消"))
+            ),
+            None,
+        )
+        if skip_button:
+            task.log_info(
+                f"{page}: 商店移除严格模式，「移除卡牌列表」未命中任何卡牌，"
+                f"点击「{skip_button.name}」跳过，不删除卡牌"
+            )
+            task.click_box(skip_button)
+            task._pending_removed_card_count = 0
+            return False
+        task.log_info(
+            f"{page}: 商店移除严格模式，未命中配置卡牌且未找到跳过按钮，"
+            "不执行兜底选牌，交由后续 handler 处理"
+        )
+        task._pending_removed_card_count = 0
+        return False
 
     if action == "移除" and selected < count:
         bottom_to_top_cards = sorted(
@@ -2865,13 +2900,31 @@ def handle_select_card(task: TriggerTask):
     if action_tip:
         task.log_info(f"右下角选牌操作提示: 「{action_tip.name}」")
 
+    # 商店付费移除：pending 由 handle_shop 点击「移除卡牌」商品时置位。
+    # 该来源下启用严格模式，只按「移除卡牌列表」匹配，命中不到就跳过；
+    # 事件移除不带此标记，保持原有强制选择与兜底逻辑（可移除其他人的卡牌）。
+    shop_removal = (
+        action == "移除"
+        and task.node_status.get("shop_removal_pending", False) is True
+    )
+    if shop_removal:
+        task.node_status["shop_removal_pending"] = False
+        task.log_info("检测到商店付费移除选牌，启用严格匹配（仅「移除卡牌列表」）")
+
     if (
         action in ("移除", "复制", "闪光", "灵光")
         and task.name == "自动卡厄思模式"
+        and not shop_removal
     ):
         _scroll_to_target_member_for_card_removal(task)
 
-    result = select_card(task, _get_card_list(task, config_key), count=count, action=action)
+    result = select_card(
+        task,
+        _get_card_list(task, config_key),
+        count=count,
+        action=action,
+        strict=shop_removal,
+    )
     if not result and action in ("闪光", "灵光"):
         skip_box = next(
             (
@@ -3457,6 +3510,9 @@ def handle_route_selection(task: TriggerTask):
             task.node_status['enter_new_node'] = False
             task.node_status['node_count'] += 1
             task.node_status['precision_memory_visited'] = False
+            # 进入新节点：重置商店移除标记，下次进店可重新检查移除卡牌
+            task.node_status['shop_removal_handled'] = False
+            task.node_status['shop_removal_pending'] = False
             task.log_info(f"离开路线选择页面，当前节点计数: {task.node_status['node_count']}")
         return False
 
@@ -3893,7 +3949,8 @@ def handle_shop(task: TriggerTask):
             # 移除卡牌不依赖 node_status['shop']：中途接管/重连时未经过路线选择页，
             # 该状态一直是 False，会导致余额充足却跳过移除。直接读配置判断。
             enter_shop = _get_config_value(task, '进入商店', False)
-            task.log_info(f"handle_shop: 当前信用点={current_credit}，进入商店配置={enter_shop}")
+            removal_handled = task.node_status.get('shop_removal_handled', False)
+            task.log_info(f"handle_shop: 当前信用点={current_credit}，进入商店配置={enter_shop}，本店已检查移除={removal_handled}")
             cost_box = find_box_at_point(task, 0.724, 0.319)
             task.log_info(f"handle_shop: 0.724,0.319处费用文本='{cost_box.name if cost_box else None}'")
             if cost_box and cost_box.name.isdigit():
@@ -3903,8 +3960,15 @@ def handle_shop(task: TriggerTask):
                         f"本局已移除{removed_card_count}张卡牌，"
                         "达到5张上限，不再使用信用点移除卡牌"
                     )
+                elif removal_handled:
+                    task.log_info("德朗商店: 本次进店已检查过移除卡牌（命中已移除或未命中已跳过），不再重复点击")
                 elif cost <= current_credit and enter_shop:
                     task.log_info(f"德朗商店: 移除卡牌需{cost}信用点，当前{current_credit}，足够，点击移除")
+                    # 标记本次移除来源于商店：选牌页只按「移除卡牌列表」严格匹配，
+                    # 无符合条件的卡牌则跳过（花钱且非强制）。事件移除不带此标记，
+                    # 保持强制选择并可用兜底移除其他人的卡牌。
+                    task.node_status['shop_removal_pending'] = True
+                    task.node_status['shop_removal_handled'] = True
                     task.click_box(box)
                     task.sleep(1)
                     task.node_status['shop'] = False
@@ -4248,6 +4312,7 @@ def _initial_node_status():
             "node_count": 0, "enter_new_node": False, "node_type": "", "is_escaped": False,
             "save_target_member": False, "target_mask_card_position": -1,
             "get_specific_flash": False, "removed_card_count": 0,
+            "shop_removal_pending": False, "shop_removal_handled": False,
             "neutral_card_count": 0}
 
 

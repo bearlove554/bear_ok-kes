@@ -56,7 +56,8 @@ class SortieMode(TriggerTask):
         self.node_status = {"shop": False, "flash_or_rest": False, "reach_final_boss": False, "final_boss_battle": False, "pass_final_boss_count": 0, 
                             "total_rounds": 0, "success_rounds": 0, "node_count": 0, "enter_new_node": False, "node_type": "",
                             "is_escaped": False, "save_target_member": False,
-                            "removed_card_count": 0, "neutral_card_count": 0}
+                            "removed_card_count": 0, "shop_removal_pending": False,
+                            "shop_removal_handled": False, "neutral_card_count": 0}
         self.member_status = {
             "equipment": {
                 "names": ["", "", ""],
