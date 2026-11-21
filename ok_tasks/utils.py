@@ -1279,6 +1279,23 @@ def _scroll_card_page(task: TriggerTask, x, y, amount, page, distance=0.25):
         task.sleep(0.5)
 
 
+def _mark_shop_removal_no_target(task: TriggerTask):
+    """记录本局所选干员没有「移除卡牌列表」里的卡，后续商店不再付费尝试移除。
+
+    严格模式下已把整个卡组滚动扫描完仍未命中配置卡牌，这个结论对本局后续商店
+    依然成立；写成本局级状态（跨节点、跨层保留），避免每次进店都白花信用点。
+    """
+    if getattr(task, "node_status", None) is None:
+        return
+    if task.node_status.get("shop_removal_no_target", False):
+        return
+    task.node_status["shop_removal_no_target"] = True
+    task.log_info(
+        "本局已确认所选干员没有「移除卡牌列表」中的卡牌，"
+        "后续商店不再进入付费移除卡牌"
+    )
+
+
 def select_card(task: TriggerTask, card_names, count=1, action="", strict=False):
     """使用卡组特征识别选择卡牌，支持滚动查找、基础牌移除和兜底选择。
 
@@ -1519,12 +1536,14 @@ def select_card(task: TriggerTask, card_names, count=1, action="", strict=False)
             )
             task.click_box(skip_button)
             task._pending_removed_card_count = 0
+            _mark_shop_removal_no_target(task)
             return False
         task.log_info(
             f"{page}: 商店移除严格模式，未命中配置卡牌且未找到跳过按钮，"
             "不执行兜底选牌，交由后续 handler 处理"
         )
         task._pending_removed_card_count = 0
+        _mark_shop_removal_no_target(task)
         return False
 
     if action == "移除" and selected < count:
@@ -4473,6 +4492,11 @@ def handle_shop(task: TriggerTask):
                         f"本局已移除{removed_card_count}张卡牌，"
                         "达到5张上限，不再使用信用点移除卡牌"
                     )
+                elif task.node_status.get('shop_removal_no_target', False):
+                    task.log_info(
+                        "德朗商店: 本局已记录所选干员没有可移除卡牌，"
+                        "跳过付费移除，继续挑选其他商品"
+                    )
                 elif removal_handled:
                     task.log_info("德朗商店: 本次进店已检查过移除卡牌（命中已移除或未命中已跳过），不再重复点击")
                 elif cost <= current_credit and enter_shop:
@@ -4939,6 +4963,7 @@ def _initial_node_status():
             "save_target_member": False, "target_mask_card_position": -1,
             "get_specific_flash": False, "removed_card_count": 0,
             "shop_removal_pending": False, "shop_removal_handled": False,
+            "shop_removal_no_target": False,
             "neutral_card_count": 0, "view_original_no_card_esc_at": 0,
             "memory_escape_pending": False,
             "memory_process_done": False}
@@ -5056,7 +5081,8 @@ def reset_layer_status(task: TriggerTask):
                 'get_specific_flash': ns.get('get_specific_flash', False),
                 'removed_card_count': ns.get('removed_card_count', 0),
                 'neutral_card_count': ns.get('neutral_card_count', 0),
-                'memory_escape_pending': ns.get('memory_escape_pending', False)}
+                'memory_escape_pending': ns.get('memory_escape_pending', False),
+                'shop_removal_no_target': ns.get('shop_removal_no_target', False)}
         task.node_status = _initial_node_status()
         task.node_status['pass_final_boss_count'] = keep['pass_final_boss_count']
         task.node_status['total_rounds'] = keep['total_rounds']
@@ -5067,6 +5093,7 @@ def reset_layer_status(task: TriggerTask):
         task.node_status['removed_card_count'] = keep['removed_card_count']
         task.node_status['neutral_card_count'] = keep['neutral_card_count']
         task.node_status['memory_escape_pending'] = keep['memory_escape_pending']
+        task.node_status['shop_removal_no_target'] = keep['shop_removal_no_target']
 
 
 def handle_close_button(task: TriggerTask):

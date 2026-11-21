@@ -57,7 +57,8 @@ class SortieMode(TriggerTask):
                             "total_rounds": 0, "success_rounds": 0, "node_count": 0, "enter_new_node": False, "node_type": "",
                             "is_escaped": False, "save_target_member": False,
                             "removed_card_count": 0, "shop_removal_pending": False,
-                            "shop_removal_handled": False, "neutral_card_count": 0}
+                            "shop_removal_handled": False, "shop_removal_no_target": False,
+                            "neutral_card_count": 0}
         self.member_status = {
             "equipment": {
                 "names": ["", "", ""],

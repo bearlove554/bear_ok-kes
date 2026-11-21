@@ -92,6 +92,7 @@ class ChaosMode(TriggerTask):
                             "removed_card_count": 0,
                             "shop_removal_pending": False,
                             "shop_removal_handled": False,
+                            "shop_removal_no_target": False,
                             "neutral_card_count": 0}
         self.member_status = {
             "equipment": {
