@@ -49,28 +49,134 @@ def handle_keyword_pause(task: TriggerTask):
     return True
 
 
+def _get_memory_process_keywords(task: TriggerTask):
+    """获取加工记忆词条关键字列表（优先读取“加工记忆词条”，兼容“指定记忆卡牌”）。"""
+    raw = _get_config_value(task, "加工记忆词条", "")
+    if not raw:
+        raw = _get_config_value(task, "指定记忆卡牌", "")
+    if isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw]
+    elif isinstance(raw, str):
+        items = re.split(r"[,，;；]+", raw)
+    else:
+        items = []
+    keywords = []
+    for item in items:
+        cleaned = re.sub(r"\s+", "", item)
+        if cleaned:
+            keywords.append(cleaned)
+    return keywords
+
+
+def _card_matches_memory_keywords(card, keywords):
+    """检查单张记忆卡牌的名称与描述是否命中任一目标词条关键字。"""
+    combined = re.sub(r"\s+", "", f"{card.get('name', '')}：:{card.get('description', '')}")
+    for kw in keywords:
+        if is_subsequence(kw, combined):
+            return kw
+    return None
+
+
 def handle_memory_process(task: TriggerTask):
-    """加工记忆页面：选择命中指定记忆的卡牌，否则跳过。"""
-    title = _get_region_text(task, (0.420, 0.072, 0.584, 0.169))
-    if "加工记忆" not in title:
+    """加工记忆（记忆加工）页面：选择命中加工记忆词条的卡牌并确认返回，未命中则跳过。"""
+    title = _get_region_text(task, (0.400, 0.070, 0.600, 0.175)).replace(" ", "")
+    process_title_keywords = {"加工记忆", "记忆加工", _get_game_text(task, "加工记忆")}
+    if not any(kw in title for kw in process_title_keywords if kw):
         return False
 
-    task.log_info("检测到加工记忆页面")
-    cards = recognize_cards(
-        task, region=(0.095, 0.204, 0.887, 0.868), page="加工记忆页面"
-    )[:3]
-    specified_memory = _get_config_value(task, "指定记忆卡牌", "")
-    if specified_memory:
-        for card in cards:
-            if is_subsequence(specified_memory, card["name"] + "：:" + card["description"]):
-                task.log_info(f"加工记忆页面：命中指定记忆卡牌「{card['name']}」")
-                _move_and_click(task, card["x"], card["y"])
-                task.sleep(1)
-                return True
+    task.log_info("检测到记忆加工页面")
+    status = getattr(task, "node_status", None)
+    if isinstance(status, dict):
+        status["memory_process_done"] = True
+        status["precision_memory_visited"] = True
 
-    task.log_info("加工记忆页面：未匹配到指定记忆卡牌，点击跳过")
+    def find_confirm_btn():
+        return next(
+            (
+                b for b in task.all_texts
+                if 0.780 <= (b.x + b.width / 2) / task.width <= 0.995
+                and 0.880 <= (b.y + b.height / 2) / task.height <= 0.985
+                and "确认" in b.name
+            ),
+            None,
+        )
+
+    def is_memory_confirm_orange():
+        patch = task.frame[
+            int(0.910 * task.height):int(0.960 * task.height),
+            int(0.800 * task.width):int(0.980 * task.width),
+            :3,
+        ]
+        if patch.size == 0:
+            return False
+        blue, _, red = patch.mean(axis=(0, 1))
+        return (red - blue) > 40
+
+    # 若已经点过确认、进入单张新词条卡牌居中展示界面（无右下角确认按钮），点击任意区域返回图1
+    confirm_box = find_confirm_btn()
+    if confirm_box is None:
+        cards_now = recognize_cards(
+            task, region=(0.095, 0.204, 0.887, 0.450), page="加工记忆页面"
+        )
+        if len(cards_now) <= 1:
+            task.log_info("记忆加工页面：检测到新词条单卡展示界面，点击返回记忆雕琢界面")
+            _move_and_click(task, 0.500, 0.900)
+            task.sleep(1.2)
+            return True
+
+    # 若已选中卡牌使右下角确认按钮变为橙色激活状态，点击确认并点击空白处返回
+    if confirm_box and is_memory_confirm_orange():
+        task.log_info("记忆加工页面：确认按钮已变黄激活，点击确认转换词条")
+        task.click_box(confirm_box)
+        task.sleep(1.8)
+        task.log_info("记忆加工页面：点击屏幕返回记忆雕琢界面")
+        _move_and_click(task, 0.500, 0.900)
+        task.sleep(1.2)
+        return True
+
+    keywords = _get_memory_process_keywords(task)
+    chosen_card = None
+    matched_kw = None
+    for attempt in range(3):
+        if attempt > 0:
+            task.sleep(0.8)
+            task.all_texts = _simplify_texts(task.ocr())
+        cards = recognize_cards(
+            task, region=(0.095, 0.204, 0.887, 0.450), page="加工记忆页面"
+        )[:3]
+        if keywords:
+            for card in cards:
+                kw = _card_matches_memory_keywords(card, keywords)
+                if kw:
+                    chosen_card = card
+                    matched_kw = kw
+                    break
+        if chosen_card or len(cards) >= 3:
+            break
+
+    if chosen_card:
+        task.log_info(
+            f"记忆加工页面：命中加工记忆词条「{matched_kw}」，点击选择「{chosen_card['name']}」"
+        )
+        _move_and_click(task, chosen_card["x"], chosen_card["y"])
+        task.sleep(0.8)
+        task.all_texts = _simplify_texts(task.ocr())
+        confirm_box = find_confirm_btn()
+        if confirm_box:
+            task.log_info("记忆加工页面：点击右下角确认按钮")
+            task.click_box(confirm_box)
+        else:
+            task.log_info("记忆加工页面：点击右下角固定确认位置")
+            _move_and_click(task, 0.885, 0.935)
+        task.sleep(1.8)
+        task.log_info("记忆加工页面：点击屏幕关闭新词条展示，返回记忆雕琢界面")
+        _move_and_click(task, 0.500, 0.900)
+        task.sleep(1.2)
+        return True
+
+    task.log_info("记忆加工页面：未匹配到目标加工记忆词条，点击跳过返回记忆雕琢界面")
     _move_and_click(task, 0.762, 0.935)
-    task.sleep(1)
+    task.sleep(1.2)
     return True
 
 
@@ -1106,11 +1212,10 @@ def handle_go_to_memory_end(task: TriggerTask):
 
 
 def _precision_button_active(task: TriggerTask, box):
-    """精密加工记忆按钮是否可用: 文本左侧胶囊背景为橙色时可用，材料耗尽后会变灰。"""
-    x1 = max(int(box.x) - 30, 0)
-    x2 = max(int(box.x) - 5, x1 + 1)
-    center_y = int(box.y + box.height / 2)
-    patch = task.frame[max(center_y - 6, 0):center_y + 6, x1:x2, :3]
+    """精密加工记忆按钮是否可用: 采样按钮内部上沿背景，避开文字、图标及左侧光效。"""
+    height, width = task.frame.shape[:2]
+    patch = task.frame[int(height * 0.763):int(height * 0.771),
+                       int(width * 0.770):int(width * 0.850), :3]
     if patch.size == 0:
         return False
     blue, _, red = patch.mean(axis=(0, 1))
@@ -1118,46 +1223,75 @@ def _precision_button_active(task: TriggerTask, box):
 
 
 def handle_precision_memory_process(task: TriggerTask):
-    """记忆之末「精密加工记忆」按钮: 可用时优先点击，变灰（材料耗尽）后交给离开按钮处理。"""
+    """记忆之末「精密加工记忆（记忆雕琢）」页面: 开启加工记忆时先转换词条，再点击右侧雕琢强化。"""
     title_text = _get_region_text(task, (0.400, 0.080, 0.600, 0.170)).replace(" ", "")
     precision_memory_text = _get_game_text(task, "精密加工记忆")
-    if precision_memory_text not in title_text:
+    if precision_memory_text not in title_text and "精密加工" not in title_text and "记忆雕琢" not in title_text:
         return False
 
     cards = recognize_cards(
-        task, region=(0.366, 0.233, 0.639, 0.900), page="精密加工记忆页面"
+        task, region=(0.366, 0.233, 0.639, 0.500), page="精密加工记忆页面"
     )
 
     # 记录已进入过该页面，避免事件对话反复选择「精密加工记忆」造成死循环
     status = getattr(task, "node_status", None)
-    if status is not None:
+    if isinstance(status, dict):
         status["precision_memory_visited"] = True
 
-    specified_memory = _get_config_value(task, "指定记忆卡牌", "")
-    if specified_memory and cards and not any(
-        is_subsequence(specified_memory, card["name"] + "：:" + card["description"])
-        for card in cards
-    ):
-        process_box = next(
-            (
-                box for box in task.all_texts
-                if 0.026 <= (box.x + box.width / 2) / task.width <= 0.315
-                and 0.708 <= (box.y + box.height / 2) / task.height <= 0.867
-                and _get_game_text(task, "加工记忆") in box.name
-            ),
-            None,
-        )
-        if process_box:
-            task.log_info("当前卡牌未命中指定记忆卡牌，点击加工记忆")
-            _move_and_click(
-                task,
-                (process_box.x + process_box.width / 2) / task.width,
-                (process_box.y + process_box.height / 2) / task.height,
+    enable_process = _get_config_value(task, "加工记忆", False) is True
+    keywords = _get_memory_process_keywords(task)
+    already_processed = isinstance(status, dict) and status.get("memory_process_done", False)
+
+    if enable_process and keywords and not already_processed:
+        matched_kw = None
+        for card in cards:
+            matched_kw = _card_matches_memory_keywords(card, keywords)
+            if matched_kw:
+                break
+        if matched_kw:
+            task.log_info(
+                f"当前记忆卡牌已命中加工记忆词条「{matched_kw}」，无需记忆加工，直接进行记忆雕琢"
             )
-            task.sleep(1)
-            return True
+            if isinstance(status, dict):
+                status["memory_process_done"] = True
+        else:
+            process_keywords = {"加工记忆", "记忆加工", _get_game_text(task, "加工记忆")}
+            process_box = next(
+                (
+                    box for box in task.all_texts
+                    if 0.020 <= (box.x + box.width / 2) / task.width <= 0.315
+                    and 0.708 <= (box.y + box.height / 2) / task.height <= 0.867
+                    and any(kw in box.name for kw in process_keywords if kw)
+                ),
+                None,
+            )
+            if process_box and _precision_button_active(task, process_box):
+                task.log_info("当前卡牌未命中加工记忆词条，点击左侧「记忆加工」转换词条")
+                if isinstance(status, dict):
+                    status["memory_process_done"] = True
+                _move_and_click(
+                    task,
+                    (process_box.x + process_box.width / 2) / task.width,
+                    (process_box.y + process_box.height / 2) / task.height,
+                )
+                task.sleep(1.5)
+                return True
 
     region = (0.700, 0.730, 0.995, 0.870)
+    done_box = next(
+        (
+            text_box
+            for text_box in task.all_texts
+            if region[0] <= (text_box.x + text_box.width / 2) / task.width <= region[2]
+            and region[1] <= (text_box.y + text_box.height / 2) / task.height <= region[3]
+            and "完成" in text_box.name
+        ),
+        None,
+    )
+    if done_box:
+        task.log_info(f"精密加工记忆已完成（按钮「{done_box.name}」），跳过点击并交由离开按钮退出")
+        return False
+
     box = next(
         (
             text_box
@@ -1265,6 +1399,7 @@ PAGE_HANDLERS = [
     handle_chaos_mask_engraving, #面具卡牌刻印获取页面
     handle_equipment, #装备选择
     handle_card_assign,
+    handle_memory_process, #记忆加工三选一页面，优先于通用确认按钮
     handle_confirm, #确认按钮
     handle_mask_card, #面具卡牌获得页面
     handle_convert, #转换按钮
@@ -1299,7 +1434,6 @@ PAGE_HANDLERS = [
     handle_destiny_choice,
     handle_main_member_flash,
     handle_card_reward,
-    handle_memory_process,
     handle_memory_card_select,
     handle_select_card,
     handle_copy_member,

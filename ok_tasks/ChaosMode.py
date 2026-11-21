@@ -60,6 +60,8 @@ class ChaosMode(TriggerTask):
         self.default_config['装备3号位优先级'] = ["异象石碑"]
         self.default_config['卡牌奖励优先级'] = ["梦之边境"]
         self.default_config['指定记忆卡牌'] = ""
+        self.default_config['加工记忆'] = False
+        self.default_config['加工记忆词条'] = ""
         self.default_config['首层刷特定闪光'] = False
         self.default_config['刷空档'] = False
         self.default_config['优先使用金币治疗'] = True
@@ -80,6 +82,7 @@ class ChaosMode(TriggerTask):
                             "target_mask_card_position": -1,
                             "get_specific_flash": False,
                             "precision_memory_visited": False,
+                            "memory_process_done": False,
                             "removed_card_count": 0,
                             "shop_removal_pending": False,
                             "shop_removal_handled": False,
@@ -124,6 +127,12 @@ class ChaosMode(TriggerTask):
         )
         self.config_description['商店刷新信用点阈值'] = (
             "德朗商店免费刷新次数用完后，仅当信用点大于该值且足够支付刷新价格时才付费刷新。"
+        )
+        self.config_description['加工记忆'] = (
+            "开启后，在记忆雕琢界面若当前记忆卡牌未命中“加工记忆词条”，会先点击左侧“记忆加工”转换词条，再点击右侧“记忆雕琢”强化。"
+        )
+        self.config_description['加工记忆词条'] = (
+            "开启“加工记忆”时生效：填写目标记忆卡牌词条关键字（多个候选词条可用逗号分隔），无需完整填写，字序与游戏原文一致即可。"
         )
 
     def load_config(self):
