@@ -2730,6 +2730,10 @@ def _should_install_equipment(task, current_name, current_quality, new_equipment
     priority = new_equipment["priority"]
     _, current_rank = _match_equipment_name(current_name, priority)
     new_rank = new_equipment["rank"]
+    # 当前槽位品质已识别但名字没被记录/识别时，优先级无法比较。
+    # 此时禁止非优先级装备替换，避免把用户想要的装备悄悄换掉。
+    if not current_name and current_quality and new_rank is None:
+        return False, "当前装备名未识别且新装备不在优先级列表，禁止替换"
     if new_rank is not None or current_rank is not None:
         if new_rank is not None and (
             current_rank is None or new_rank < current_rank

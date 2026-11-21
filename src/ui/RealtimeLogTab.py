@@ -6,13 +6,15 @@
 """
 from html import escape
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QTextBrowser,
@@ -38,6 +40,7 @@ class RealtimeLogTab(CustomTab):
 
         self.worker = RealtimeLogWorker()
         self.cards = []
+        self.visible_cards = []
         self.last_card_id = 0
         self.last_total = 0
         self.stopped = False
@@ -82,6 +85,9 @@ class RealtimeLogTab(CustomTab):
 
         self.card_browser = QTextBrowser()
         self.card_browser.setOpenExternalLinks(False)
+        self.card_browser.setOpenLinks(False)
+        self.card_browser.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.card_browser.customContextMenuRequested.connect(self.on_card_context_menu)
         self.card_browser.setMinimumHeight(520)
         self.card_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.card_browser.setStyleSheet(
@@ -194,7 +200,14 @@ class RealtimeLogTab(CustomTab):
             '<div style="font-family:Microsoft YaHei, Segoe UI, sans-serif; '
             'font-size:12px; color:#1f2937;">'
         ]
-        for card in cards[-120:]:
+        self.visible_cards = cards[-120:]
+        for card in self.visible_cards:
+            card_id = int(card.get("id", 0) or 0)
+            # 整张卡片包一层锚点，右键时用光标所在的锚点定位到具体卡片，
+            # 避免日志滚动刷新后按屏幕坐标选到别人的内容。
+            parts.append(
+                '<a href="card:%d" style="text-decoration:none;color:inherit;">' % card_id
+            )
             tags = " ".join(
                 '<span style="display:inline-block;background:#e8f0fe;color:#1d4ed8;'
                 'border-radius:8px;padding:1px 6px;margin-right:4px;">%s</span>'
@@ -214,7 +227,7 @@ class RealtimeLogTab(CustomTab):
             parts.append(self._card_row("状态", card.get("state", []), "#8b5cf6"))
             parts.append(self._card_row("判断", card.get("judge", []), "#f59e0b"))
             parts.append(self._card_row("执行", [card.get("action", "")], "#22c55e"))
-            parts.append("</div>")
+            parts.append("</div></a>")
         parts.append("</div>")
 
         self.card_browser.setHtml("".join(parts))
@@ -222,6 +235,106 @@ class RealtimeLogTab(CustomTab):
             cursor = self.card_browser.textCursor()
             cursor.movePosition(QTextCursor.End)
             self.card_browser.setTextCursor(cursor)
+
+    @staticmethod
+    def _card_text(card):
+        """把一张卡片转成便于粘贴的纯文本。"""
+        head = str(card.get("time", ""))
+        tags = card.get("cat", [])
+        if tags:
+            head += "  [" + " / ".join(str(tag) for tag in tags) + "]"
+        lines = [head]
+        for title, key in (
+            ("识别", "detect"),
+            ("状态", "state"),
+            ("判断", "judge"),
+            ("执行", "action"),
+        ):
+            values = card.get(key, [])
+            if isinstance(values, str):
+                values = [values]
+            text = " / ".join(str(value) for value in values if value) if values else "无"
+            lines.append("%s：%s" % (title, text))
+        return "\n".join(lines)
+
+    def _copy_text(self, text):
+        QApplication.clipboard().setText(text)
+        self.status_label.setText("已复制 %d 字到剪贴板" % len(text))
+        self.status_label.setStyleSheet("color: #15803d;")
+
+    def _card_at_click(self, pos):
+        """按右键位置找到对应卡片；找不到锚点时返回 (None, 光标)。"""
+        cursor = self.card_browser.cursorForPosition(pos)
+        href = cursor.charFormat().anchorHref()
+        # 嵌套 span 可能覆盖字符格式，向前回看一小段找卡片锚点
+        if not href:
+            probe = QTextCursor(self.card_browser.document())
+            for offset in range(1, 120):
+                index = cursor.position() - offset
+                if index <= 0:
+                    break
+                probe.setPosition(index)
+                found = probe.charFormat().anchorHref()
+                if found:
+                    href = found
+                    break
+        if not href or not href.startswith("card:"):
+            return None, cursor
+        try:
+            card_id = int(href.split(":", 1)[1])
+        except ValueError:
+            return None, cursor
+        card = next(
+            (item for item in self.visible_cards if int(item.get("id", 0) or 0) == card_id),
+            None,
+        )
+        return card, cursor
+
+    def _select_card_text(self, cursor, href):
+        """选中锚点覆盖的整张卡片，便于用户继续手动复制局部内容。"""
+        document = self.card_browser.document()
+        probe = QTextCursor(document)
+        start = cursor.position()
+        end = start
+        while start > 0:
+            probe.setPosition(start - 1)
+            probe.setPosition(start, QTextCursor.KeepAnchor)
+            if probe.charFormat().anchorHref() != href:
+                break
+            start -= 1
+        while end < document.characterCount() - 1:
+            probe.setPosition(end)
+            probe.setPosition(end + 1, QTextCursor.KeepAnchor)
+            if probe.charFormat().anchorHref() != href:
+                break
+            end += 1
+        if end > start:
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.KeepAnchor)
+            self.card_browser.setTextCursor(cursor)
+
+    @staticmethod
+    def _as_point(pos):
+        return pos if isinstance(pos, QPoint) else QPoint(int(pos[0]), int(pos[1]))
+
+    def on_card_context_menu(self, pos):
+        """右键某条日志：整卡选中，并可直接复制这条或全部可见日志。"""
+        pos = self._as_point(pos)
+        card, cursor = self._card_at_click(pos)
+        menu = QMenu(self.card_browser)
+        if card is not None:
+            href = "card:%s" % card.get("id", 0)
+            self._select_card_text(cursor, href)
+            copy_one = menu.addAction("复制这条日志")
+            copy_one.triggered.connect(lambda: self._copy_text(self._card_text(card)))
+            menu.addSeparator()
+        copy_all = menu.addAction("复制当前全部日志")
+        copy_all.triggered.connect(
+            lambda: self._copy_text(
+                "\n\n".join(self._card_text(item) for item in self.visible_cards)
+            )
+        )
+        menu.exec(self.card_browser.mapToGlobal(pos))
 
     @staticmethod
     def _card_row(title, values, color):
