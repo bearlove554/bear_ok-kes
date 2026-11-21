@@ -99,6 +99,12 @@ pyz = set(a.open_embedded_archive("PYZ.pyz").toc.keys())  # 冻结的 .py 模块
 | `--add-data opencc\lib\share\opencc` | 额外映射字典目录到 lib 路径，解决中文路径下 C 库查找 `t2s.json` 失败 |
 | `--exclude-module PySide6.translations` | 排除 PySide6 翻译文件（.qm），避免某些系统上解压 CRC 校验失败 |
 
+## 发包前必做：更新版本说明
+
+每次改版本号并打包后，必须同步更新 `E:/ok-kes/版本更新说明.html`（项目根目录，git 仓库外）：
+在对应分组顶部新增版本卡片，写清版本号、日期、commit、类型标签、改动点；有坑或根因补红色说明；
+并核对三处版本号一致——`src/config.py` 的 `version`、exe 文件名、HTML 卡片。
+
 ## 代码层面的必要修改
 
 打包前需要确保以下修改已存在：
