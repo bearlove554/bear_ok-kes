@@ -4168,14 +4168,53 @@ def handle_shop(task: TriggerTask):
 
 def handle_view_original(task: TriggerTask):
     """卡牌闪光（查看原件）事件: 按类型特征识别卡牌，并按闪光优先级选择。"""
+    view_keywords = tuple(
+        keyword
+        for keyword in (
+            _get_game_text(task, '查看原件'),
+            _get_game_text(task, '查看之前的闪光'),
+        )
+        if keyword
+    )
     box1 = find_box_at_point(task, 0.890, 0.051)
     box2 = find_box_at_point(task, 0.896, 0.131)
-    if not ((box1 and (_get_game_text(task, '查看原件') in box1.name or _get_game_text(task, '查看之前的闪光') in box1.name)) or (box2 and (_get_game_text(task, '查看原件') in box2.name or _get_game_text(task, '查看之前的闪光') in box2.name))):
+    matched_top_box = None
+    for box in (box1, box2):
+        if box and any(keyword in box.name for keyword in view_keywords):
+            matched_top_box = box
+            break
+
+    # 部分界面缩放下「查看原件」按钮会落在两个固定点之间，补一次右上角文本搜索
+    if not matched_top_box:
+        for text_box in task.all_texts:
+            center_x = (text_box.x + text_box.width / 2) / task.width
+            center_y = (text_box.y + text_box.height / 2) / task.height
+            if center_x < 0.75 or center_y > 0.20:
+                continue
+            if any(keyword in text_box.name for keyword in view_keywords):
+                matched_top_box = text_box
+                break
+
+    if not matched_top_box:
         return False
 
+    task.log_info(f"检测到卡牌闪光页面，识别按钮「{matched_top_box.name}」")
     cards = recognize_cards(task, page="卡牌闪光页面")
     if not cards:
-        return False
+        task.log_info("卡牌闪光页面未识别到卡牌，等待后重试一次")
+        task.sleep(0.8)
+        task.all_texts = _simplify_texts(task.ocr())
+        cards = recognize_cards(task, page="卡牌闪光页面")
+
+    if not cards:
+        last_esc = task.node_status.get('view_original_no_card_esc_at', 0)
+        if time.time() - last_esc < 3:
+            return False
+        task.node_status['view_original_no_card_esc_at'] = time.time()
+        task.log_info("卡牌闪光页面仍无可识别卡牌，发送ESC返回上一级")
+        task.send_key('esc')
+        task.sleep(1)
+        return True
 
     flash_priority = []
     for keyword in _get_card_list(task, '闪光优先级'):
@@ -4313,7 +4352,7 @@ def _initial_node_status():
             "save_target_member": False, "target_mask_card_position": -1,
             "get_specific_flash": False, "removed_card_count": 0,
             "shop_removal_pending": False, "shop_removal_handled": False,
-            "neutral_card_count": 0}
+            "neutral_card_count": 0, "view_original_no_card_esc_at": 0}
 
 
 def _initial_member_status():
