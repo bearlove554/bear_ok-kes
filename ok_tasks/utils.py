@@ -1,6 +1,7 @@
 from ok import TriggerTask
 
 import re
+import json
 import random
 import time
 import sys
@@ -2551,6 +2552,121 @@ def _member_deck_state(task: TriggerTask):
     return deck
 
 
+def _saved_archive_log_path():
+    """返回独立存档记录日志路径，跟随 exe 同级 logs 目录。"""
+    if getattr(sys, "frozen", False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.getcwd()
+    return os.path.normpath(os.path.join(base_dir, "logs", "saved_archives.jsonl"))
+
+
+def _capture_run_snapshot(task: TriggerTask, result):
+    """在探险结算重置状态前，保存本局数据快照供存档日志使用。"""
+    node_status = getattr(task, "node_status", None) or {}
+    equipment = _equipment_state(task)
+    deck = _member_deck_state(task)
+
+    def clone(value):
+        try:
+            return json.loads(json.dumps(value, ensure_ascii=False))
+        except (TypeError, ValueError):
+            return {}
+
+    task._last_run_snapshot = {
+        "本局结果": result,
+        "通关层数": int(node_status.get("pass_final_boss_count", 0)) + 1,
+        "节点数": node_status.get("node_count", 0),
+        "节点类型": node_status.get("node_type", ""),
+        "是否已逃脱": node_status.get("is_escaped", False),
+        "是否已获得特定闪光": node_status.get("get_specific_flash", False),
+        "本局已移除卡牌": node_status.get("removed_card_count", 0),
+        "本局已获得中立牌": node_status.get("neutral_card_count", 0),
+        "总轮数": node_status.get("total_rounds", 0),
+        "成功轮数": node_status.get("success_rounds", 0),
+        "装备": clone(equipment),
+        "卡牌情况": clone(deck),
+    }
+
+
+def _write_saved_archive_log(task: TriggerTask, archive_value, feature_name):
+    """把本局被保留的存档写入独立 JSONL 日志，一行一个存档。"""
+    try:
+        from src.config import version
+        app_version = str(version).strip() or "dev"
+    except Exception:
+        app_version = "dev"
+
+    snapshot = getattr(task, "_last_run_snapshot", None)
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    equipment = snapshot.get("装备")
+    if not isinstance(equipment, dict):
+        equipment = _equipment_state(task)
+    deck = snapshot.get("卡牌情况")
+    if not isinstance(deck, dict):
+        deck = _member_deck_state(task)
+
+    names = equipment.get("names", []) or []
+    descriptions = equipment.get("descriptions", []) or []
+    qualities = equipment.get("qualities", []) or []
+    engraving_items = equipment.get("engravings", []) or []
+    record = {
+        "记录时间": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "程序版本": app_version,
+        "存档价值TB": archive_value,
+        "保留阈值TB": _get_config_value(task, "保留大于多少TB的存档", 62000),
+        "存档槽位": feature_name,
+        "刷存档主战员": _get_config_value(task, "刷存档主战员", ""),
+        "本局结果": snapshot.get("本局结果", ""),
+        "通关层数": snapshot.get("通关层数", 0),
+        "节点数": snapshot.get("节点数", 0),
+        "节点类型": snapshot.get("节点类型", ""),
+        "是否已逃脱": snapshot.get("是否已逃脱", False),
+        "是否已获得特定闪光": snapshot.get("是否已获得特定闪光", False),
+        "本局已移除卡牌": snapshot.get("本局已移除卡牌", 0),
+        "本局已获得中立牌": snapshot.get("本局已获得中立牌", 0),
+        "总轮数": snapshot.get("总轮数", 0),
+        "成功轮数": snapshot.get("成功轮数", 0),
+        "命中刻印数": _count_matched_engravings(task, equipment),
+        "卡牌情况": deck,
+    }
+    for slot in range(3):
+        engraving = engraving_items[slot] if slot < len(engraving_items) and isinstance(engraving_items[slot], dict) else {}
+        record[f"装备{slot + 1}号位"] = names[slot] if slot < len(names) else ""
+        record[f"装备{slot + 1}号位品质"] = qualities[slot] if slot < len(qualities) else ""
+        record[f"装备{slot + 1}号位描述"] = descriptions[slot] if slot < len(descriptions) else ""
+        record[f"装备{slot + 1}号位刻印类型"] = engraving.get("type", "")
+        record[f"装备{slot + 1}号位刻印文本"] = engraving.get("text", "")
+        record[f"装备{slot + 1}号位刻印等级"] = engraving.get("rank")
+
+    path = _saved_archive_log_path()
+    try:
+        directory = os.path.dirname(path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        task.log_info(f"已记录被保存存档: {archive_value}TB -> {path}")
+        return True
+    except Exception as e:
+        task.log_info(f"写入存档记录失败: {e}")
+        return False
+
+
+def _log_current_archive_once(task: TriggerTask, archive_value, feature_name):
+    """只记录第一个槽位（本局新存档），每次结算只记一次。"""
+    if feature_name != "deletecards" or archive_value is None:
+        return False
+    node_status = getattr(task, "node_status", None)
+    if not isinstance(node_status, dict) or node_status.get("saved_archive_logged"):
+        return False
+    if _write_saved_archive_log(task, archive_value, feature_name):
+        node_status["saved_archive_logged"] = True
+        return True
+    return False
+
+
 def _reset_meditation_state(task: TriggerTask):
     """按当前配置重建目标主战员的冥想状态。"""
     configured_cards = _get_config_value(task, "需要冥想的卡牌", [])
@@ -5079,11 +5195,13 @@ def handle_expedition_result(task: TriggerTask):
     task.log_info("检测到探险结果页面")
     complete_box = find_box_at_point(task, 0.928, 0.122)
     failed_box = find_box_at_point(task, 0.296, 0.719)
+    result_text = "失败"
     if hasattr(task, 'node_status'):
         task.node_status['total_rounds'] += 1
     if complete_box and "完成" in complete_box.name:
         if hasattr(task, 'node_status'):
             task.node_status['success_rounds'] += 1
+            result_text = "成功"
             task.log_info("出击模式探险结果: 成功")
     elif complete_box and "失败" in complete_box.name:
         if not _get_config_value(task, '只打第一层', False):
@@ -5092,14 +5210,17 @@ def handle_expedition_result(task: TriggerTask):
             task.log_info("出击模式探险结果: 失败")
     elif not complete_box and not failed_box:
         if _get_config_value(task, '只打第一层', False) and task.node_status.get('pass_final_boss_count', 0) >= 1: # 完成第一层任务
+            result_text = "成功"
             task.log_info("卡厄思模式探险结果: 成功")
         elif not _get_config_value(task, '只打第一层', False) and not task.node_status.get('is_escaped', 0): # 完成了任务且没有逃脱
             task.node_status['success_rounds'] += 1
+            result_text = "成功"
             task.log_info("卡厄思模式探险结果: 成功")
         else:
             task.log_info("卡厄思模式探险结果: 失败")
     else:
         task.log_info("卡厄思模式探险结果: 失败")
+    _capture_run_snapshot(task, result_text)
     task.log_info(f"探险完成，成功次数/总次数={task.node_status['success_rounds']}/{task.node_status['total_rounds']}")
     if hasattr(task, 'node_status'):
         reset_mission_status(task)
