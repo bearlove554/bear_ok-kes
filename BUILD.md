@@ -24,7 +24,7 @@ python -m ok.update.inline_ok_requirements
 ```bash
 pyinstaller --onefile --noconsole --uac-admin --noupx --noconfirm ^
   --runtime-tmpdir "C:\Temp\ok_kes" ^
-  --name "ok-kes-win32-portable-v2.0.9" ^
+  --name "ok-kes-win32-portable-v2.0.10" ^
   --icon icons/icon.ico ^
   --add-data "i18n;i18n" ^
   --add-data "ok_tasks;ok_tasks" ^
@@ -57,12 +57,12 @@ pyinstaller --onefile --noconsole --uac-admin --noupx --noconfirm ^
 
 ```bash
 rmdir /s /q build
-del "ok-kes-win32-portable-v2.0.9.spec"
+del "ok-kes-win32-portable-v2.0.10.spec"
 ```
 
 ### 4. 产物
 
-位于 `dist\ok-kes-win32-portable-v2.0.9.exe`，约 216 MB。
+位于 `dist\ok-kes-win32-portable-v2.0.10.exe`，约 216 MB。
 
 ### 5. 归档自检（发包前必做）
 
@@ -70,7 +70,7 @@ del "ok-kes-win32-portable-v2.0.9.spec"
 
 ```python
 from PyInstaller.archive.readers import CArchiveReader
-a = CArchiveReader(r"dist\ok-kes-win32-portable-v2.0.9.exe")
+a = CArchiveReader(r"dist\ok-kes-win32-portable-v2.0.10.exe")
 toc = set(a.toc.keys())                                  # DLL / PYD / 资源清单
 pyz = set(a.open_embedded_archive("PYZ.pyz").toc.keys())  # 冻结的 .py 模块清单
 ```

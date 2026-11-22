@@ -2561,6 +2561,19 @@ def _saved_archive_log_path():
     return os.path.normpath(os.path.join(base_dir, "logs", "saved_archives.jsonl"))
 
 
+def _format_run_duration(seconds):
+    """把秒数格式化成「X小时Y分Z秒」的可读文本。"""
+    try:
+        total = max(0, int(seconds))
+    except (TypeError, ValueError):
+        total = 0
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}小时{minutes}分{secs}秒"
+    return f"{minutes}分{secs}秒"
+
+
 def _capture_run_snapshot(task: TriggerTask, result):
     """在探险结算重置状态前，保存本局数据快照供存档日志使用。"""
     node_status = getattr(task, "node_status", None) or {}
@@ -2573,6 +2586,30 @@ def _capture_run_snapshot(task: TriggerTask, result):
         except (TypeError, ValueError):
             return {}
 
+    # 本局起点在 reset_mission_status / reset_all_status 里写入；
+    # 快照在结算时抓取，此时起点仍是本局开始时间。
+    start_time = getattr(task, "_run_start_time", None)
+    if isinstance(start_time, (int, float)):
+        elapsed_seconds = max(0, int(time.time() - start_time))
+    else:
+        elapsed_seconds = 0
+
+    # 把工具整局识别并登记过的卡牌整理成列表，存档日志里逐张写明名称/类型/描述。
+    # deck 是 {卡牌名: 描述, "冥想": {...}}，冥想单独拆开，避免混进卡牌列表。
+    card_types = getattr(task, "_run_card_types", None)
+    if not isinstance(card_types, dict):
+        card_types = {}
+    meditation = deck.get("冥想", {})
+    card_list = []
+    for name, desc in deck.items():
+        if name == "冥想" or not isinstance(desc, str):
+            continue
+        card_list.append({
+            "名称": name,
+            "类型": str(card_types.get(name, "") or ""),
+            "描述": desc,
+        })
+
     task._last_run_snapshot = {
         "本局结果": result,
         "通关层数": int(node_status.get("pass_final_boss_count", 0)) + 1,
@@ -2584,8 +2621,13 @@ def _capture_run_snapshot(task: TriggerTask, result):
         "本局已获得中立牌": node_status.get("neutral_card_count", 0),
         "总轮数": node_status.get("total_rounds", 0),
         "成功轮数": node_status.get("success_rounds", 0),
+        "本局耗时秒": elapsed_seconds,
+        "本局耗时": _format_run_duration(elapsed_seconds),
         "装备": clone(equipment),
         "卡牌情况": clone(deck),
+        "卡组卡牌": card_list,
+        "卡组卡牌数": len(card_list),
+        "冥想状态": clone(meditation),
     }
 
 
@@ -2628,8 +2670,13 @@ def _write_saved_archive_log(task: TriggerTask, archive_value, feature_name):
         "本局已获得中立牌": snapshot.get("本局已获得中立牌", 0),
         "总轮数": snapshot.get("总轮数", 0),
         "成功轮数": snapshot.get("成功轮数", 0),
+        "本局耗时秒": snapshot.get("本局耗时秒", 0),
+        "本局耗时": snapshot.get("本局耗时", ""),
         "命中刻印数": _count_matched_engravings(task, equipment),
         "卡牌情况": deck,
+        "卡组卡牌": snapshot.get("卡组卡牌", []),
+        "卡组卡牌数": snapshot.get("卡组卡牌数", 0),
+        "冥想状态": snapshot.get("冥想状态", {}),
     }
     for slot in range(3):
         engraving = engraving_items[slot] if slot < len(engraving_items) and isinstance(engraving_items[slot], dict) else {}
@@ -5222,6 +5269,9 @@ def handle_expedition_result(task: TriggerTask):
         task.log_info("卡厄思模式探险结果: 失败")
     _capture_run_snapshot(task, result_text)
     task.log_info(f"探险完成，成功次数/总次数={task.node_status['success_rounds']}/{task.node_status['total_rounds']}")
+    _last_snapshot = getattr(task, "_last_run_snapshot", None)
+    if isinstance(_last_snapshot, dict):
+        task.log_info(f"本局耗时: {_last_snapshot.get('本局耗时', '')}（{_last_snapshot.get('本局耗时秒', 0)}秒）")
     if hasattr(task, 'node_status'):
         reset_mission_status(task)
     return False
@@ -5299,6 +5349,9 @@ def _finish_only_first_layer(task: TriggerTask) -> bool:
 
 def reset_all_status(task: TriggerTask):
     """重置所有状态：恢复节点状态和目标主战员状态。"""
+    # 新的一局从这里开始计时，供结算快照计算本局耗时。
+    task._run_start_time = time.time()
+    task._run_card_types = {}
     if getattr(task, 'node_status', None) is not None:
         task.node_status = _initial_node_status()
     task.member_status = _initial_member_status()
@@ -5367,6 +5420,9 @@ def reset_mission_status(task: TriggerTask):
     task._engraving_scroll_equip_name = ""
     task._shop_inspected_items = set()
     task._shop_page_sig = None
+    # 结算完成即视为下一局起点，结算快照在此之前抓取，计时不受影响。
+    task._run_start_time = time.time()
+    task._run_card_types = {}
 
 
 def reset_layer_status(task: TriggerTask):
@@ -5617,6 +5673,11 @@ def handle_card_assign(task: TriggerTask):
     ):
         deck = _member_deck_state(task)
         deck[matched_card_name or card_name] = card_desc
+        card_types = getattr(task, "_run_card_types", None)
+        if not isinstance(card_types, dict):
+            card_types = {}
+            task._run_card_types = card_types
+        card_types[matched_card_name or card_name] = assigned_card.get("type", "") if assigned_card else ""
     _move_and_click(task, 0.756, (chosen_lv.y + chosen_lv.height / 2) / task.height)
     task.sleep(1)
     if is_purchase_page:

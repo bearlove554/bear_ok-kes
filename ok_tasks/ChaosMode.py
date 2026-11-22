@@ -155,7 +155,8 @@ class ChaosMode(TriggerTask):
         )
         self.config_description['保留大于多少TB的存档'] = (
             "存档价值（TB）高于该值的保留，低于的回收为金币。被保留的本局新存档会自动写入"
-            "exe 同级 logs/saved_archives.jsonl，包含装备1-3号位、品质、描述、刻印、卡牌情况和本局结果等字段。"
+            "exe 同级 logs/saved_archives.jsonl，包含装备1-3号位、品质、描述、刻印、"
+            "本局耗时、卡组卡牌明细（名称/类型/描述）、冥想状态和本局结果等字段。"
         )
         self.config_description['路线优先级'] = (
             "路线节点类型的偏好顺序，越靠前越优先。血量健康时严格按本顺序选择；"
