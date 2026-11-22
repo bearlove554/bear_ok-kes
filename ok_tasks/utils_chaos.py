@@ -14,7 +14,7 @@ from utils import (
     handle_event_task, handle_route_selection, handle_obtain_reward,
     handle_leave, handle_next_step, handle_select, handle_rest, handle_view_original, handle_weakness_info,
     handle_close_button,
-    handle_card_assign, handle_non_battle_page, handle_minimizemap, handle_held_cards_page, handle_craft,
+    handle_card_assign, handle_non_battle_page, handle_minimizemap, handle_held_cards_page, handle_member_list_page, handle_craft,
     handle_remove, handle_three_choice_card_remove, handle_flash, handle_reflash, handle_grant_flash, handle_copy, handle_convert,
     handle_equipment_recast,
     handle_stuck_log, handle_expedition_result,
@@ -1728,6 +1728,7 @@ PAGE_HANDLERS = [
     log_node_status,
     handle_tactic_trustee_confirm, #战术托管确认弹窗，必须先于画面卡住兜底
     handle_held_cards_page, #持有卡牌/队伍卡牌页面，必须先于画面卡住兜底
+    handle_member_list_page, #误进主战员列表，点左上角返回，必须先于画面卡住兜底
     handle_stuck_log, #画面卡住检测及兜底处理
     handle_close_page, #点击屏幕关闭页面，优先于其他普通页面处理
 

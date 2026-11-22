@@ -5691,6 +5691,30 @@ def handle_card_assign(task: TriggerTask):
     _record_neutral_card(task)
     return False
 
+def handle_member_list_page(task: TriggerTask):
+    """主战员列表页面: 误进后点左上角返回箭头退回上一级。
+
+    标题在左上角（约 0.12~0.30, 0.05），截图里的返回箭头位于左上角圆角按钮内
+    （中心约 0.043, 0.051）。该页没有「点击屏幕」提示，卡住兜底只会在十几秒后
+    随机点卡牌，导致长期停在这一页，因此必须显式识别并点返回。
+    """
+    title_keywords = (
+        _get_game_text(task, '主战员列表'),
+    )
+    for text_box in task.all_texts:
+        center_y = (text_box.y + text_box.height / 2) / task.height
+        center_x = (text_box.x + text_box.width / 2) / task.width
+        if center_y > 0.10 or center_x > 0.40:
+            continue
+        if not any(keyword in text_box.name for keyword in title_keywords if keyword):
+            continue
+        task.log_info("检测到主战员列表页面，点击左上角返回")
+        _move_and_click(task, 0.043, 0.051)
+        task.sleep(1)
+        return True
+    return False
+
+
 def handle_held_cards_page(task: TriggerTask):
     """持有卡牌页面: 检测到持有卡牌/队伍卡牌则关闭页面。
 
