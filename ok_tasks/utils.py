@@ -40,6 +40,80 @@ def is_subsequence(first: str, second: str) -> bool:
     return all(char in second_iter for char in first)
 
 
+# 闪光词条的概念匹配：OCR 常把“费用减少1”读成“费用减少效果”，
+# 把“抽取1张”读成“常抽取1”，单纯靠 is_subsequence 会整条词条失配。
+# 这里把常见效果归一成概念，按概念打分选最贴合的卡牌。
+# 权重 >=2 的视为“特有概念”，用于判断卡牌是否已经刷到目标闪光。
+_FLASH_EFFECT_CONCEPTS = (
+    ("费用减少", 4, re.compile(r"(?:此卡)?费用减少(?:效果|[1一])?|减(?:一|1)费")),
+    ("抽取", 2, re.compile(r"(?:常)?抽取(?:[1一](?:张)?)?|抽(?:牌)?[1一](?:张)?")),
+    ("生成3张", 1, re.compile(r"生成[3三](?:张|枚)")),
+    ("加入手牌", 1, re.compile(r"加入手牌")),
+    ("保留", 1, re.compile(r"保留")),
+    ("唯一", 1, re.compile(r"唯一")),
+    ("复制", 1, re.compile(r"复制")),
+)
+
+
+def _split_flash_keyword(keyword):
+    """把“卡牌名：效果词条”拆开，返回 (卡牌名, 词条, 是否有冒号)。"""
+    text = re.sub(r"\s+", "", keyword or "")
+    for separator in ("：", ":"):
+        if separator in text:
+            name, effect = text.split(separator, 1)
+            return name, effect, True
+    return "", text, False
+
+
+def _flash_priority_match(keyword, card_name, card_description):
+    """判断卡牌命中闪光优先级的程度。
+
+    返回 (是否命中, 匹配分, 是否命中特有概念)。
+    - 有冒号：先校验卡牌名，再把词条里的效果概念逐项匹配描述并累计权重，
+      兼容“费用减少效果/费用减少1”“常抽取1/抽取1张”等 OCR 变体。
+    - 无冒号或词条里没有可识别概念：退回原有子序列匹配，避免影响老配置。
+    """
+    name_part, effect_part, has_separator = _split_flash_keyword(keyword)
+    clean_name = re.sub(r"\s+", "", card_name or "")
+    clean_description = re.sub(r"\s+", "", card_description or "")
+    if not has_separator:
+        return is_subsequence(name_part, clean_name + "：:" + clean_description), 1, True
+    if name_part and not is_subsequence(name_part, clean_name):
+        return False, 0, False
+    if not effect_part:
+        return False, 0, False
+
+    score = 0
+    matched_any = False
+    matched_specific = False
+    for concept, weight, pattern in _FLASH_EFFECT_CONCEPTS:
+        if concept not in effect_part and not pattern.search(effect_part):
+            continue
+        if pattern.search(clean_description):
+            score += weight
+            matched_any = True
+            if weight >= 2:
+                matched_specific = True
+    if not matched_any:
+        return is_subsequence(effect_part, clean_description), 1, True
+    return True, score, matched_specific
+
+
+def _flash_card_names_from_priority(task: TriggerTask):
+    """闪光卡牌列表为空时，从闪光优先级里按冒号前的卡牌名派生选卡目标。"""
+    names = []
+    for keyword in _get_card_list(task, "闪光优先级"):
+        if not isinstance(keyword, str):
+            continue
+        name_part, _, has_separator = _split_flash_keyword(keyword)
+        name = name_part.strip() if has_separator else ""
+        if name and name not in names:
+            names.append(name)
+    if names:
+        task.log_info(f"闪光卡牌列表为空，按闪光优先级派生选卡目标：{names}")
+    return names
+
+
 def _move_and_click(task: TriggerTask, x, y):
     """先将鼠标移动到目标位置，等待界面响应后再点击。"""
     page_handler = sys._getframe(1).f_code.co_name
@@ -1330,27 +1404,25 @@ def select_card(task: TriggerTask, card_names, count=1, action="", strict=False)
             )
 
     def filter_flash_priority_cards(cards):
-        """闪光时排除已命中闪光优先级的卡牌，避免重复选择。"""
-        if not flash_priority:
+        """闪光选卡时排除已经刷到目标闪光的卡牌，避免重复选择。
+
+        只认闪光优先级第一项的“特有概念”（如费用减少、抽取）。
+        兜底词条通常只是卡牌自带的基础描述，不能因为命中它就把目标卡牌排除，
+        否则会出现“想把剑鸣九霄刷成神闪，却因为普通闪光被排除而跳过”的问题。
+        """
+        target_keyword = flash_priority[0] if flash_priority else None
+        if not isinstance(target_keyword, str) or not target_keyword.strip():
             return cards
 
         filtered_cards = []
         for card in cards:
-            combined_text = f"{card['name']}：:{card['description']}"
-            matched_keyword = next(
-                (
-                    keyword.strip()
-                    for keyword in flash_priority
-                    if isinstance(keyword, str)
-                    and keyword.strip()
-                    and is_subsequence(keyword.strip(), combined_text)
-                ),
-                None,
+            matched, _, matched_specific = _flash_priority_match(
+                target_keyword, card["name"], card["description"]
             )
-            if matched_keyword:
+            if matched and matched_specific:
                 task.log_info(
-                    f"{page}: 卡牌「{card['name']}」的名称和描述命中"
-                    f"闪光优先级「{matched_keyword}」，排除该卡牌"
+                    f"{page}: 卡牌「{card['name']}」已命中"
+                    f"闪光优先级第一项「{target_keyword}」的目标效果，排除该卡牌"
                 )
                 meditation_state = _member_deck_state(task).get("冥想", {})
                 if isinstance(meditation_state, dict):
@@ -3362,7 +3434,14 @@ def handle_select_card(task: TriggerTask):
     config_key = _SELECT_CARD_CONFIG_KEYS.get(action)
     if config_key is None:
         return False
-    task.log_info(f"检测到卡牌{action}选择，需选择{count}张，配置key={config_key}")
+    card_names = _get_card_list(task, config_key)
+    derived_from_priority = action in ("闪光", "灵光") and not card_names
+    if derived_from_priority:
+        card_names = _flash_card_names_from_priority(task)
+    task.log_info(
+        f"检测到卡牌{action}选择，需选择{count}张，配置key={config_key}"
+        + ("（闪光卡牌列表为空，使用闪光优先级派生的卡牌名）" if derived_from_priority else "")
+    )
 
     # 日志打印右下角选牌操作提示
     action_tip = find_box_at_point(task, 0.945, 0.918)
@@ -3389,7 +3468,7 @@ def handle_select_card(task: TriggerTask):
 
     result = select_card(
         task,
-        _get_card_list(task, config_key),
+        card_names,
         count=count,
         action=action,
         strict=shop_removal,
@@ -4838,22 +4917,27 @@ def handle_view_original(task: TriggerTask):
             continue
 
         for desc_keyword in flash_priority:
+            best_card = None
+            best_score = -1
             for card in cards:
-                if is_subsequence(
-                    desc_keyword,
-                    card['name'] + "：:" + card['description'],
+                matched, score, _ = _flash_priority_match(
+                    desc_keyword, card['name'], card['description']
+                )
+                if matched and score > best_score:
+                    best_card = card
+                    best_score = score
+            if best_card:
+                chosen_card = best_card
+                task.log_info(
+                    f"优先选择「{chosen_card['name']}」({desc_keyword}，匹配分={best_score})"
+                )
+                if (
+                    _get_config_value(task, "首层刷特定闪光", False) is True
+                    and flash_priority
+                    and desc_keyword == flash_priority[0]
                 ):
-                    chosen_card = card
-                    task.log_info(f"优先选择「{card['name']}」({desc_keyword})")
-                    if (
-                        _get_config_value(task, "首层刷特定闪光", False) is True
-                        and flash_priority
-                        and desc_keyword == flash_priority[0]
-                    ):
-                        task.node_status["get_specific_flash"] = True
-                        task.log_info("已命中闪光优先级第一项，记录已获得特定闪光")
-                    break
-            if chosen_card:
+                    task.node_status["get_specific_flash"] = True
+                    task.log_info("已命中闪光优先级第一项，记录已获得特定闪光")
                 break
 
         # 已命中优先闪光卡牌，或卡面置信度已足够稳定（>=3张且平均置信度>=0.85且重试过至少1次）则结束重试

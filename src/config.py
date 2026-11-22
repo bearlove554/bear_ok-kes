@@ -6,7 +6,7 @@ import sys
 import numpy as np
 from ok import ConfigOption
 
-version = "2.0.6"
+version = "2.0.7"
 #不需要修改version, Github Action打包会自动修改
 
 OCR_BACKEND_AUTO = "自动"
