@@ -335,6 +335,30 @@ def _get_current_hp_percent(task: TriggerTask):
     return hp_percent
 
 
+def _route_insertion_flags(task: TriggerTask):
+    """返回 (血量是否偏低, 商店节点是否允许插队)。
+
+    血量健康时严格按用户配置的路线优先级走，休息/商店都不插队；
+    血量偏低时休息可以插队，但带商店标志的节点还要信用点超过
+    「商店刷新信用点阈值」才额外获得商店加权。
+    """
+    hp_percent = _get_current_hp_percent(task)
+    hp_low = hp_percent is not False and hp_percent < 50
+    credit = _get_current_credit(task)
+    threshold = _get_config_value(task, "商店刷新信用点阈值", 300)
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError):
+        threshold = 300
+    shop_allowed = hp_low and credit > threshold
+    task.log_info(
+        f"路线插队判定: 血量={'低' if hp_low else '健康/未识别'}"
+        f"({hp_percent if hp_percent is not False else '未识别'})，"
+        f"信用点={credit}，阈值={threshold}，商店插队={'允许' if shop_allowed else '禁止'}"
+    )
+    return hp_low, shop_allowed
+
+
 def find_box_at_point(task: TriggerTask, rel_x, rel_y):
     """查找包含相对坐标点的 box，多个命中时返回面积最小的（最精确）。"""
     px, py = rel_x * task.width, rel_y * task.height
@@ -1023,8 +1047,13 @@ def find_best_map_route(map_info, target_node_type):
     }
 
 
-def find_best_map_route_by_priority(map_info, node_type_priority):
-    """按节点类型加权计算最优路线，并返回下一列应选择的节点。"""
+def find_best_map_route_by_priority(map_info, node_type_priority,
+                                    health_priority=False, shop_bonus_allowed=True):
+    """按节点类型加权计算最优路线，并返回下一列应选择的节点。
+
+    health_priority=True 时「休息」按最高权重计算；
+    shop_bonus_allowed=False 时「商店」标志不再额外加权。
+    """
     nodes = map_info.get("nodes", [])
     adjacency = map_info.get("adjacency", {})
     node_by_id = {node["id"]: node for node in nodes}
@@ -1041,7 +1070,8 @@ def find_best_map_route_by_priority(map_info, node_type_priority):
         for index, node_type in enumerate(node_type_priority)
     }
     highest_priority_weight = max(priority_weights.values(), default=1)
-    shop_bonus = highest_priority_weight * 2
+    shop_bonus = highest_priority_weight * 2 if shop_bonus_allowed else 0
+    health_bonus = highest_priority_weight * 2
 
     def best_route_from(node_id):
         if node_id in route_cache:
@@ -1060,8 +1090,11 @@ def find_best_map_route_by_priority(map_info, node_type_priority):
             for item in node.get("special_features", [])
             if item["feature_name"] != "shop_in_map"
         )
+        type_weight = priority_weights.get(node["type"], 0)
+        if health_priority and node["type"] == "休息":
+            type_weight = health_bonus
         own_weighted_score = (
-            priority_weights.get(node["type"], 0)
+            type_weight
             + own_shop_count * shop_bonus
             + own_special_score
         )
@@ -1137,6 +1170,7 @@ def find_best_map_route_by_priority(map_info, node_type_priority):
         "priority": list(node_type_priority),
         "priority_weights": priority_weights,
         "shop_bonus": shop_bonus,
+        "health_priority": health_priority,
         "weighted_score": weighted_score,
         "shop_count": shop_count,
         "type_counts": dict(zip(node_type_priority, type_counts)),
@@ -4259,11 +4293,16 @@ def handle_route_selection(task: TriggerTask):
     )
 
     priority_index = {node_type: index for index, node_type in enumerate(priority)}
+    hp_low, shop_insert_allowed = _route_insertion_flags(task)
 
     def sort_key(node):
-        # 商店节点是固定最高优先级，不受用户配置的节点类型顺序影响。
-        shop_priority = 0 if "shop" in node["special_features"] else 1
-        if node["node_type"] == "结算":
+        # 血量健康时严格按路线优先级；血量低时休息可以插队，
+        # 但商店标志还要信用点超过阈值才额外插队。
+        has_shop = "shop" in node["special_features"]
+        shop_priority = 0 if (has_shop and shop_insert_allowed) else 1
+        if hp_low and node["node_type"] == "休息":
+            type_priority = -1
+        elif node["node_type"] == "结算":
             type_priority = len(priority) + 1
         else:
             type_priority = priority_index.get(node["node_type"], len(priority))
@@ -4277,7 +4316,12 @@ def handle_route_selection(task: TriggerTask):
     # 先根据左下角小地图的完整连通关系规划路线，再用右侧当前可点击节点
     # 校验规划结果。两边识别不一致时，使用当前节点识别结果兜底。
     map_info = recognize_map_connections(task)
-    route_plan = find_best_map_route_by_priority(map_info, priority)
+    route_plan = find_best_map_route_by_priority(
+        map_info,
+        priority,
+        health_priority=hp_low,
+        shop_bonus_allowed=shop_insert_allowed,
+    )
     visible_nodes = sorted(nodes, key=lambda item: relative_center(item["box"])[1])
     node = None
     if route_plan and route_plan["next_row"] is not None:
