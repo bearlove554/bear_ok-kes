@@ -1303,17 +1303,17 @@ def handle_data_collected(task: TriggerTask):
     if retain_threshold <= 0 and not force_delete:
         task.log_info("保留大于多少TB的存档设置为0，保留全部存档")
         if node_status is not None:
-            for feature in task.find_feature(
-                feature_name="deletecards",
-                horizontal_variance=0.005,
-                vertical_variance=0.005,
-            ) or []:
-                center_x = (feature.x + feature.width / 2) / task.width
-                center_y = (feature.y + feature.height / 2) / task.height
-                _log_current_archive_once(
-                    task, _archive_value_at(task, center_x, center_y), "deletecards"
-                )
-                break
+            for slot_name in ("deletecards", "deletecards2", "deletecards3"):
+                for feature in task.find_feature(
+                    feature_name=slot_name,
+                    horizontal_variance=0.005,
+                    vertical_variance=0.005,
+                ) or []:
+                    center_x = (feature.x + feature.width / 2) / task.width
+                    center_y = (feature.y + feature.height / 2) / task.height
+                    _log_current_archive_once(
+                        task, _archive_value_at(task, center_x, center_y), slot_name
+                    )
         return False
     if node_status is None:
         return False

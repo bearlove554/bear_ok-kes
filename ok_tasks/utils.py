@@ -2659,6 +2659,10 @@ def _write_saved_archive_log(task: TriggerTask, archive_value, feature_name):
         "存档价值TB": archive_value,
         "保留阈值TB": _get_config_value(task, "保留大于多少TB的存档", 62000),
         "存档槽位": feature_name,
+        "装备卡组来源": (
+            "本局新存档" if feature_name == "deletecards"
+            else "本局快照(辅助槽位历史存档，非该存档实际装备卡组)"
+        ),
         "刷存档主战员": _get_config_value(task, "刷存档主战员", ""),
         "本局结果": snapshot.get("本局结果", ""),
         "通关层数": snapshot.get("通关层数", 0),
@@ -2702,14 +2706,26 @@ def _write_saved_archive_log(task: TriggerTask, archive_value, feature_name):
 
 
 def _log_current_archive_once(task: TriggerTask, archive_value, feature_name):
-    """只记录第一个槽位（本局新存档），每次结算只记一次。"""
-    if feature_name != "deletecards" or archive_value is None:
+    """三个存档槽位达标保留时各记一次，同一槽位同一局不重复写。
+
+    deletecards 是本局新存档，deletecards2/3 多为辅助角色的历史存档。
+    辅助存档没有独立的装备/卡组状态，仍使用本局快照，并在记录中标注来源。
+    """
+    valid_slots = ("deletecards", "deletecards2", "deletecards3")
+    if feature_name not in valid_slots or archive_value is None:
         return False
     node_status = getattr(task, "node_status", None)
-    if not isinstance(node_status, dict) or node_status.get("saved_archive_logged"):
+    if not isinstance(node_status, dict):
+        return False
+    logged_slots = node_status.get("saved_archive_logged_slots")
+    if not isinstance(logged_slots, set):
+        logged_slots = set()
+        node_status["saved_archive_logged_slots"] = logged_slots
+    slot_key = (feature_name, archive_value)
+    if slot_key in logged_slots:
         return False
     if _write_saved_archive_log(task, archive_value, feature_name):
-        node_status["saved_archive_logged"] = True
+        logged_slots.add(slot_key)
         return True
     return False
 
@@ -5288,7 +5304,8 @@ def _initial_node_status():
             "shop_removal_no_target": False,
             "neutral_card_count": 0, "view_original_no_card_esc_at": 0,
             "memory_escape_pending": False,
-            "memory_process_done": False}
+            "memory_process_done": False,
+            "saved_archive_logged_slots": set()}
 
 
 def _initial_member_status():
